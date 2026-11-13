@@ -151,30 +151,40 @@ function local_cbt_kiosk_before_footer(): string {
 
     $isPrivileged = ($isAdmin || $has_privilege);
 
-    // Get current quiz unlock password / active token
-    $quizpassword = '';
+    // Get quizid and attemptid
+    $quizid    = 0;
+    $attemptid = 0;
     try {
         $cm = $PAGE->cm;
         if ($cm && !empty($cm->instance)) {
-            $quiz = $DB->get_record('quiz', ['id' => $cm->instance], 'id, password');
-            if ($quiz && !empty($quiz->password)) {
-                $quizpassword = (string)$quiz->password;
-            }
+            $quizid = (int)$cm->instance;
         }
     } catch (\Throwable $e) {}
 
-    return local_cbt_kiosk_render_anticheat($quizpassword, $isPrivileged);
+    if (isset($_GET['attempt'])) {
+        $attemptid = (int)$_GET['attempt'];
+    }
+
+    // Get Master Proctor Unlock PIN (separate from quiz token)
+    $proctorPin = (string)get_config('local_cbt_kiosk', 'proctor_pin');
+    if (empty($proctorPin)) {
+        $proctorPin = 'PROKTOR123';
+    }
+
+    return local_cbt_kiosk_render_anticheat($quizid, $attemptid, $proctorPin, $isPrivileged);
 }
 
 /**
  * Render anti-cheat UI elements, tab-switch tracker, and proctor unlock modal.
  *
- * @param string $quizpassword
+ * @param int $quizid
+ * @param int $attemptid
+ * @param string $proctorPin Dedicated Master Proctor PIN (different from quiz token)
  * @param bool $isPrivileged True if user is teacher/admin testing the quiz
  * @return string
  */
-function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileged = false): string {
-    $safeToken = htmlspecialchars($quizpassword, ENT_QUOTES, 'UTF-8');
+function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $proctorPin = 'PROKTOR123', bool $isPrivileged = false): string {
+    $safeProctorPin = htmlspecialchars(strtoupper(trim($proctorPin)), ENT_QUOTES, 'UTF-8');
     $privilegedFlag = $isPrivileged ? 'true' : 'false';
 
     return <<<HTML
@@ -409,9 +419,11 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
 (function() {
     'use strict';
 
-    var activeQuizToken = '{$safeToken}';
-    var isPrivileged    = {$privilegedFlag};
-    var MAX_VIOLATIONS  = 3;
+    var currentQuizId    = {$quizid};
+    var currentAttemptId = {$attemptid};
+    var masterProctorPin = '{$safeProctorPin}';
+    var isPrivileged     = {$privilegedFlag};
+    var MAX_VIOLATIONS   = 3;
     var attemptKey      = window.location.pathname + window.location.search;
     var STORAGE_COUNT   = 'cbt_tab_violations_' + attemptKey;
     var STORAGE_LOCKED  = 'cbt_locked_' + attemptKey;
@@ -535,6 +547,31 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
         }, 3000);
     }
 
+    // Kirim catatan audit log pelanggaran ke server secara asinkron
+    function sendLogToServer(action, count, reason, pin) {
+        try {
+            var www = (window.M && window.M.cfg && window.M.cfg.wwwroot) ? window.M.cfg.wwwroot : '';
+            var logUrl = www + '/local/cbt_kiosk/log_violation.php';
+            var payload = {
+                action: action,
+                violation_count: count,
+                reason: reason || '',
+                quizid: currentQuizId,
+                attemptid: currentAttemptId,
+                pin: pin || ''
+            };
+            if (window.fetch) {
+                fetch(logUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                }).catch(function() {});
+            } else if (navigator.sendBeacon) {
+                navigator.sendBeacon(logUrl, JSON.stringify(payload));
+            }
+        } catch(e) {}
+    }
+
     function lockExam() {
         isLocked = true;
         sessionStorage.setItem(STORAGE_LOCKED, 'true');
@@ -546,6 +583,7 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
         document.body.classList.add('cbt-exam-locked');
         updateBadge();
         playBeep();
+        sendLogToServer('locked', MAX_VIOLATIONS, 'Ujian terkunci otomatis (3x pelanggaran tab/aplikasi)');
         if (pinInput) {
             pinInput.value = '';
             // Only auto-focus on non-touch devices to avoid unexpected viewport jumping on HP
@@ -566,6 +604,7 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
         }
         updateBadge();
         playBeep();
+        sendLogToServer('warning_' + count, count, 'Peringatan #' + count + ' pelanggaran tab/aplikasi');
     }
 
     function triggerViolation(reason) {
@@ -666,24 +705,74 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
 
     function performUnlock() {
         var entered = (pinInput ? pinInput.value : '').trim().toUpperCase();
-        var validPins = ['PROKTOR123', 'CBT2026', '123456'];
-        if (activeQuizToken && activeQuizToken.length > 0) {
-            validPins.push(activeQuizToken.toUpperCase());
+        if (!entered) {
+            if (unlockErr) {
+                unlockErr.textContent = 'Silakan masukkan PIN Pengawas Ruangan.';
+                unlockErr.style.display = 'block';
+            }
+            return;
         }
+
+        // Daftar PIN Pengawas yang sah (Master PIN)
+        var validPins = ['PROKTOR123', 'CBT2026', '123456'];
+        if (masterProctorPin && masterProctorPin.length > 0) {
+            validPins.push(masterProctorPin.toUpperCase());
+        }
+
+        // CATATAN PENTING: Token soal TIDAK DIIZINKAN untuk membuka kunci!
+        // Siswa tidak bisa menggunakan token kuis untuk membuka layar sendiri.
 
         var isCorrect = validPins.indexOf(entered) !== -1;
 
         if (isCorrect) {
+            sendLogToServer('unlocked', MAX_VIOLATIONS, 'Ujian dibuka kembali oleh Pengawas (PIN)', entered);
             unlockSuccess('Ujian berhasil dibuka kembali oleh Pengawas. Harap fokus!');
         } else {
-            if (unlockErr) {
-                unlockErr.textContent = 'PIN / Token Pengawas salah! Silakan panggil proktor ruangan.';
-                unlockErr.style.display = 'block';
+            // Verifikasi lanjutan ke server (siapa tahu ada PIN kustom terbaru di DB)
+            verifyUnlockWithServer(entered);
+        }
+    }
+
+    function verifyUnlockWithServer(entered) {
+        var www = (window.M && window.M.cfg && window.M.cfg.wwwroot) ? window.M.cfg.wwwroot : '';
+        var logUrl = www + '/local/cbt_kiosk/log_violation.php';
+
+        if (!window.fetch) {
+            showUnlockError('PIN Pengawas salah! Token soal tidak dapat digunakan untuk membuka kunci.');
+            return;
+        }
+
+        fetch(logUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'unlocked',
+                quizid: currentQuizId,
+                attemptid: currentAttemptId,
+                pin: entered,
+                violation_count: MAX_VIOLATIONS
+            })
+        }).then(function(res) {
+            return res.json();
+        }).then(function(data) {
+            if (data && data.success) {
+                unlockSuccess('Ujian berhasil dibuka kembali oleh Pengawas.');
+            } else {
+                showUnlockError((data && data.message) ? data.message : 'PIN Pengawas salah! Token soal tidak dapat digunakan untuk membuka kunci.');
             }
-            if (pinInput) {
-                pinInput.focus();
-                pinInput.select();
-            }
+        }).catch(function() {
+            showUnlockError('PIN Pengawas salah! Token soal tidak dapat digunakan untuk membuka kunci.');
+        });
+    }
+
+    function showUnlockError(msg) {
+        if (unlockErr) {
+            unlockErr.textContent = msg;
+            unlockErr.style.display = 'block';
+        }
+        if (pinInput) {
+            pinInput.focus();
+            pinInput.select();
         }
     }
 
