@@ -63,9 +63,9 @@ class observer {
              JOIN {context} ctx ON ctx.id = ra.contextid
              WHERE ra.userid = :uid
              AND ra.roleid IN (1, 2, 3, 4)
-             AND ctx.contextlevel >= :courselevel
-             LIMIT 1",
-            ['uid' => $userid, 'courselevel' => CONTEXT_COURSE]
+             AND ctx.contextlevel >= :courselevel",
+            ['uid' => $userid, 'courselevel' => CONTEXT_COURSE],
+            0, 1
         );
 
         if (!empty($teacher_check)) {
@@ -74,18 +74,17 @@ class observer {
 
         // User is student/guest — find the active quiz (quiz with non-empty password token)
         // Active quiz = quiz where password is not empty (set by exam-admin CBT)
-        $active_quiz = $DB->get_record_sql(
+        $active_quizzes = $DB->get_records_sql(
             "SELECT q.id, q.name, q.course, cm.id as cmid
              FROM {quiz} q
-             JOIN {course_modules} cm ON cm.instance = q.id AND cm.module = (
-                 SELECT id FROM {modules} WHERE name = 'quiz'
-             )
-             WHERE q.password != ''
-             AND q.password IS NOT NULL
+             JOIN {course_modules} cm ON cm.instance = q.id
+             JOIN {modules} m ON m.id = cm.module AND m.name = 'quiz'
+             WHERE q.password IS NOT NULL AND q.password != ''
              AND cm.visible = 1
-             ORDER BY q.timemodified DESC
-             LIMIT 1"
+             ORDER BY q.timemodified DESC",
+            null, 0, 1
         );
+        $active_quiz = !empty($active_quizzes) ? reset($active_quizzes) : null;
 
         if ($active_quiz) {
             // Check if student is enrolled in that course

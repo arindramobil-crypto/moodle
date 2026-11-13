@@ -19,18 +19,17 @@ if (is_siteadmin()) {
 }
 
 // Check if there is now an active quiz (token has been released by exam-admin)
-$active_quiz = $DB->get_record_sql(
+$active_quizzes = $DB->get_records_sql(
     "SELECT q.id, q.name, q.course, cm.id as cmid
      FROM {quiz} q
-     JOIN {course_modules} cm ON cm.instance = q.id AND cm.module = (
-         SELECT id FROM {modules} WHERE name = 'quiz'
-     )
-     WHERE q.password != ''
-     AND q.password IS NOT NULL
+     JOIN {course_modules} cm ON cm.instance = q.id
+     JOIN {modules} m ON m.id = cm.module AND m.name = 'quiz'
+     WHERE q.password IS NOT NULL AND q.password != ''
      AND cm.visible = 1
-     ORDER BY q.timemodified DESC
-     LIMIT 1"
+     ORDER BY q.timemodified DESC",
+    null, 0, 1
 );
+$active_quiz = !empty($active_quizzes) ? reset($active_quizzes) : null;
 
 // If quiz is active and student is enrolled, redirect immediately
 if ($active_quiz) {

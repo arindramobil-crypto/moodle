@@ -280,9 +280,11 @@ input.cbt-input,
 
     <?php
     // Check if there is an active quiz (non-empty password = token active)
-    $active_quiz = $DB->get_record_sql(
-        "SELECT q.id, q.name FROM {quiz} q WHERE q.password != '' AND q.password IS NOT NULL ORDER BY q.timemodified DESC LIMIT 1"
+    $active_quizzes = $DB->get_records_sql(
+        "SELECT q.id, q.name FROM {quiz} q WHERE q.password IS NOT NULL AND q.password != '' ORDER BY q.timemodified DESC",
+        null, 0, 1
     );
+    $active_quiz = !empty($active_quizzes) ? reset($active_quizzes) : null;
     if ($active_quiz): ?>
     <div class="quiz-active-banner">
         <div class="quiz-active-dot"></div>

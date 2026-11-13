@@ -62,7 +62,7 @@ function local_cbt_kiosk_after_config(): void {
     // Check if user has teacher/manager role at any context (should not be in kiosk)
     $privileged_role_ids = [1, 2, 3, 4]; // manager, coursecreator, editingteacher, teacher
     $has_privilege = $DB->record_exists_sql(
-        "SELECT ra.id FROM {role_assignments} ra WHERE ra.userid = :uid AND ra.roleid IN (1, 2, 3, 4) LIMIT 1",
+        "SELECT ra.id FROM {role_assignments} ra WHERE ra.userid = :uid AND ra.roleid IN (1, 2, 3, 4)",
         ['uid' => $USER->id]
     );
 
@@ -72,18 +72,17 @@ function local_cbt_kiosk_after_config(): void {
 
     // Student user is navigating to a non-quiz, non-allowed page — enforce kiosk
     // Find active quiz (quiz with non-empty password token from exam-admin)
-    $active_quiz = $DB->get_record_sql(
+    $active_quizzes = $DB->get_records_sql(
         "SELECT q.id, q.name, q.course, cm.id as cmid
          FROM {quiz} q
-         JOIN {course_modules} cm ON cm.instance = q.id AND cm.module = (
-             SELECT id FROM {modules} WHERE name = 'quiz' LIMIT 1
-         )
-         WHERE q.password != ''
-         AND q.password IS NOT NULL
+         JOIN {course_modules} cm ON cm.instance = q.id
+         JOIN {modules} m ON m.id = cm.module AND m.name = 'quiz'
+         WHERE q.password IS NOT NULL AND q.password != ''
          AND cm.visible = 1
-         ORDER BY q.timemodified DESC
-         LIMIT 1"
+         ORDER BY q.timemodified DESC",
+        null, 0, 1
     );
+    $active_quiz = !empty($active_quizzes) ? reset($active_quizzes) : null;
 
     if ($active_quiz) {
         $is_enrolled = is_enrolled(context_course::instance($active_quiz->course), $USER->id, '', true);
