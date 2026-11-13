@@ -421,6 +421,10 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
     var lastTriggerTime   = 0;
     var originalTitle     = document.title;
     var titleInterval     = null;
+    var pageLoadTime      = Date.now();
+    var isUnloadingOrReloading = false;
+    var blurTimer         = null;
+    var GRACE_PERIOD_MS   = 2500; // 2.5 detik grace period saat halaman baru dimuat
 
     var counterBadge = document.getElementById('cbt-tab-counter');
     var adminTag     = document.getElementById('cbt-admin-tag');
@@ -564,10 +568,18 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
         playBeep();
     }
 
-    function triggerViolation() {
+    function triggerViolation(reason) {
+        if (isUnloadingOrReloading || isLocked) {
+            return;
+        }
+        // Jangan catat pelanggaran selama masa toleransi awal setelah reload/load halaman
+        if (Date.now() - pageLoadTime < GRACE_PERIOD_MS) {
+            return;
+        }
+
         var now = Date.now();
-        // Debounce 1.5 seconds to avoid double-firing between blur and visibilitychange
-        if (isLocked || (now - lastTriggerTime < 1500)) {
+        // Debounce 1.5 detik agar tidak memicu pelanggaran berulang kali dalam 1 aksi
+        if (now - lastTriggerTime < 1500) {
             return;
         }
         lastTriggerTime = now;
@@ -639,7 +651,7 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
     function unlockSuccess(msg) {
         isLocked = false;
         sessionStorage.setItem(STORAGE_LOCKED, 'false');
-        // Give student 1 final chance (set violations to 2 of 3)
+        // Beri siswa 1 kesempatan terakhir (pelanggaran disetel ke 2/3)
         currentViolations = MAX_VIOLATIONS - 1;
         sessionStorage.setItem(STORAGE_COUNT, currentViolations.toString());
 
@@ -675,14 +687,31 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
         }
     }
 
-    // 1. Detect Tab Visibility Change
+    // Tangani reload, refresh, form submit, dan navigasi legal agar TIDAK memicu pelanggaran
+    window.addEventListener('beforeunload', function() {
+        isUnloadingOrReloading = true;
+        clearTimeout(blurTimer);
+    });
+    window.addEventListener('pagehide', function() {
+        isUnloadingOrReloading = true;
+        clearTimeout(blurTimer);
+    });
+    document.addEventListener('submit', function() {
+        isUnloadingOrReloading = true;
+        clearTimeout(blurTimer);
+    });
+
+    // 1. Detect Tab Visibility Change (Pindah Tab / Minimize Browser)
     document.addEventListener('visibilitychange', function() {
+        if (isUnloadingOrReloading) return;
+
         if (document.hidden) {
             startTitleAlert();
-            triggerViolation();
+            triggerViolation('Pindah tab atau meminimalkan browser');
         } else {
             stopTitleAlert();
-            // When student switches BACK, ensure modal is visible if violation occurred
+            clearTimeout(blurTimer);
+            // Saat kembali ke tab ujian, pastikan modal peringatan/kunci langsung tampil
             if (isLocked) {
                 if (lockOverlay) lockOverlay.style.display = 'flex';
             } else if (currentViolations > 0 && currentViolations < MAX_VIOLATIONS) {
@@ -691,12 +720,28 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
         }
     });
 
-    // 2. Detect Window Blur (clicking outside, Alt+Tab, opening other apps)
+    // 2. Detect Window Blur (Aplikasi lain terbuka / Alt+Tab / Split Screen)
+    // Menggunakan delay 1.2s agar klik pada tombol reload atau address bar TIDAK dianggap pelanggaran
     window.addEventListener('blur', function() {
-        triggerViolation();
+        if (isUnloadingOrReloading || isLocked) return;
+        if (Date.now() - pageLoadTime < GRACE_PERIOD_MS) return;
+
+        // Jika tab benar-benar tersembunyi, visibilitychange yang akan menanganinya
+        if (document.hidden) {
+            triggerViolation('Aplikasi berpindah ke latar belakang');
+            return;
+        }
+
+        clearTimeout(blurTimer);
+        blurTimer = setTimeout(function() {
+            if (!isUnloadingOrReloading && !document.hasFocus() && !isLocked) {
+                triggerViolation('Fokus jendela ujian hilang (membuka aplikasi lain)');
+            }
+        }, 1200);
     });
 
     window.addEventListener('focus', function() {
+        clearTimeout(blurTimer);
         stopTitleAlert();
         if (isLocked) {
             if (lockOverlay) lockOverlay.style.display = 'flex';
@@ -725,8 +770,15 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
         return false;
     });
 
-    // 5. Block Keyboard Shortcuts (F12, Inspect, Print, View Source, Save)
+    // 5. Block Keyboard Shortcuts (F12, Inspect, Print, View Source, Save) tapi izinkan Reload F5/Ctrl+R
     document.addEventListener('keydown', function(e) {
+        // Izinkan F5 dan Ctrl+R untuk refresh tanpa memicu pelanggaran
+        if (e.key === 'F5' || e.keyCode === 116 || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))) {
+            isUnloadingOrReloading = true;
+            clearTimeout(blurTimer);
+            return; // Biarkan browser me-reload secara wajar
+        }
+
         // F12 Developer Tools
         if (e.key === 'F12' || e.keyCode === 123) {
             e.preventDefault();
