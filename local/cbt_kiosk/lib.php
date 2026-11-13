@@ -163,6 +163,43 @@ function local_cbt_kiosk_before_footer(): string {
 
     if (isset($_GET['attempt'])) {
         $attemptid = (int)$_GET['attempt'];
+    } elseif (isset($_POST['attempt'])) {
+        $attemptid = (int)$_POST['attempt'];
+    }
+
+    if ($quizid <= 0 && $attemptid > 0) {
+        try {
+            $quizid = (int)$DB->get_field('quiz_attempts', 'quiz', ['id' => $attemptid]);
+        } catch (\Throwable $e) {}
+    }
+
+    // Ambil status pelanggaran & kunci terbaru dari basis data server untuk siswa ini
+    $serverViolations = 0;
+    $serverIsLocked   = false;
+    if ($quizid > 0 && !empty($USER->id)) {
+        try {
+            $dbman = $DB->get_manager();
+            if ($dbman->table_exists('local_cbt_kiosk_logs')) {
+                $lastLog = $DB->get_record_sql(
+                    "SELECT * FROM {local_cbt_kiosk_logs}
+                     WHERE userid = :uid AND quizid = :qid
+                     ORDER BY id DESC",
+                    ['uid' => (int)$USER->id, 'qid' => (int)$quizid],
+                    IGNORE_MULTIPLE
+                );
+                if ($lastLog) {
+                    if ($lastLog->action === 'locked') {
+                        $serverIsLocked = true;
+                        $serverViolations = 3;
+                    } elseif (in_array($lastLog->action, ['unlocked', 'remote_unlocked'], true)) {
+                        $serverIsLocked = false;
+                        $serverViolations = 2; // toleransi 1 kesempatan terakhir
+                    } elseif (strpos($lastLog->action, 'warning_') === 0) {
+                        $serverViolations = (int)$lastLog->violation_count;
+                    }
+                }
+            }
+        } catch (\Throwable $e) {}
     }
 
     // Get Master Proctor Unlock PIN (separate from quiz token)
@@ -171,7 +208,7 @@ function local_cbt_kiosk_before_footer(): string {
         $proctorPin = 'PROKTOR123';
     }
 
-    return local_cbt_kiosk_render_anticheat($quizid, $attemptid, $proctorPin, $isPrivileged);
+    return local_cbt_kiosk_render_anticheat($quizid, $attemptid, $proctorPin, $isPrivileged, $serverViolations, $serverIsLocked);
 }
 
 /**
@@ -181,11 +218,14 @@ function local_cbt_kiosk_before_footer(): string {
  * @param int $attemptid
  * @param string $proctorPin Dedicated Master Proctor PIN (different from quiz token)
  * @param bool $isPrivileged True if user is teacher/admin testing the quiz
+ * @param int $serverViolations
+ * @param bool $serverIsLocked
  * @return string
  */
-function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $proctorPin = 'PROKTOR123', bool $isPrivileged = false): string {
+function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $proctorPin = 'PROKTOR123', bool $isPrivileged = false, int $serverViolations = 0, bool $serverIsLocked = false): string {
     $safeProctorPin = htmlspecialchars(strtoupper(trim($proctorPin)), ENT_QUOTES, 'UTF-8');
     $privilegedFlag = $isPrivileged ? 'true' : 'false';
+    $serverLockedFlag = $serverIsLocked ? 'true' : 'false';
 
     return <<<HTML
 <!-- ===== CBT KIOSK ANTI-CHEAT LOCKDOWN SYSTEM ===== -->
@@ -423,13 +463,24 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
     var currentAttemptId = {$attemptid};
     var masterProctorPin = '{$safeProctorPin}';
     var isPrivileged     = {$privilegedFlag};
+    var serverViolations = {$serverViolations};
+    var serverIsLocked   = {$serverLockedFlag};
     var MAX_VIOLATIONS   = 3;
-    var attemptKey      = window.location.pathname + window.location.search;
+
+    // KUNCI PENYIMPANAN HARUS PER-ATEMPT / PER-QUIS, BUKAN PER-HALAMAN NOMOR SOAL!
+    // Di Moodle, setiap nomor soal memiliki parameter URL berbeda (&page=0, &page=1, dst.)
+    // Dengan kunci 'quiz_X_att_Y', jumlah pelanggaran & status kunci tetap sama di nomor soal manapun!
+    var attemptKey = 'quiz_' + currentQuizId + (currentAttemptId > 0 ? '_att_' + currentAttemptId : '');
     var STORAGE_COUNT   = 'cbt_tab_violations_' + attemptKey;
     var STORAGE_LOCKED  = 'cbt_locked_' + attemptKey;
 
-    var currentViolations = parseInt(sessionStorage.getItem(STORAGE_COUNT) || '0', 10);
-    var isLocked          = sessionStorage.getItem(STORAGE_LOCKED) === 'true';
+    var localCount = parseInt(sessionStorage.getItem(STORAGE_COUNT) || '0', 10);
+    var currentViolations = Math.max(localCount, serverViolations);
+    var isLocked          = (sessionStorage.getItem(STORAGE_LOCKED) === 'true') || serverIsLocked || (currentViolations >= MAX_VIOLATIONS);
+
+    // Sinkronkan kembali ke sessionStorage
+    sessionStorage.setItem(STORAGE_COUNT, currentViolations.toString());
+    sessionStorage.setItem(STORAGE_LOCKED, isLocked ? 'true' : 'false');
     var lastTriggerTime   = 0;
     var originalTitle     = document.title;
     var titleInterval     = null;
