@@ -799,9 +799,11 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
         }
 
         // Daftar PIN Pengawas yang sah (Master PIN)
-        var validPins = ['PROKTOR123', 'CBT2026', '123456'];
+        var validPins = [];
         if (masterProctorPin && masterProctorPin.length > 0) {
             validPins.push(masterProctorPin.toUpperCase());
+        } else {
+            validPins.push('PROKTOR123');
         }
 
         // CATATAN PENTING: Token soal TIDAK DIIZINKAN untuk membuka kunci!

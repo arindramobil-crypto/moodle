@@ -65,10 +65,11 @@ if (!$dbman->table_exists($tablename)) {
 // Handler for unlocking
 if ($action === 'unlocked') {
     // Determine configured Proctor PINs
-    $customPin = get_config('local_cbt_kiosk', 'proctor_pin');
-    $validPins = ['PROKTOR123', 'CBT2026', '123456'];
+    $customPin = trim((string)get_config('local_cbt_kiosk', 'proctor_pin'));
     if (!empty($customPin)) {
-        $validPins[] = strtoupper(trim((string)$customPin));
+        $validPins = [strtoupper($customPin)];
+    } else {
+        $validPins = ['PROKTOR123'];
     }
 
     // STRICT CHECK: The Proctor PIN must NEVER be the quiz token!
