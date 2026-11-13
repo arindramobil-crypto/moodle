@@ -41,7 +41,7 @@ function local_cbt_kiosk_after_config(): void {
         '/theme/',             // themes
         '/lib/',               // core libs
         '/ajax/',              // any ajax endpoint
-        '/admin/',             // allow admin panel (but siteadmin check above handles this)
+        '/admin/',             // allow admin panel (handled by siteadmin check anyway)
         '/webservice/',        // web services
         '/tokenpluginfile.php',// token plugin files
         '/draftfile.php',      // draft files
@@ -60,41 +60,46 @@ function local_cbt_kiosk_after_config(): void {
     }
 
     // Check if user has teacher/manager role at any context (should not be in kiosk)
-    $privileged_role_ids = [1, 2, 3, 4]; // manager, coursecreator, editingteacher, teacher
-    $has_privilege = $DB->record_exists_sql(
-        "SELECT ra.id FROM {role_assignments} ra WHERE ra.userid = :uid AND ra.roleid IN (1, 2, 3, 4)",
-        ['uid' => $USER->id]
-    );
-
-    if ($has_privilege || is_siteadmin($USER->id)) {
-        return; // Teachers/admin can navigate freely
+    try {
+        $has_privilege = $DB->record_exists_sql(
+            "SELECT ra.id FROM {role_assignments} ra WHERE ra.userid = :uid AND ra.roleid IN (1, 2, 3, 4)",
+            ['uid' => $USER->id]
+        );
+        if ($has_privilege || is_siteadmin($USER->id)) {
+            return; // Teachers/admin can navigate freely
+        }
+    } catch (\Throwable $e) {
+        return; // On DB error, don't block
     }
 
     // Student user is navigating to a non-quiz, non-allowed page — enforce kiosk
     // Find active quiz (quiz with non-empty password token from exam-admin)
-    $active_quizzes = $DB->get_records_sql(
-        "SELECT q.id, q.name, q.course, cm.id as cmid
-         FROM {quiz} q
-         JOIN {course_modules} cm ON cm.instance = q.id
-         JOIN {modules} m ON m.id = cm.module AND m.name = 'quiz'
-         WHERE q.password IS NOT NULL AND q.password != ''
-         AND cm.visible = 1
-         ORDER BY q.timemodified DESC",
-        null, 0, 1
-    );
-    $active_quiz = !empty($active_quizzes) ? reset($active_quizzes) : null;
+    try {
+        $active_quizzes = $DB->get_records_sql(
+            "SELECT q.id, q.name, q.course, cm.id as cmid
+             FROM {quiz} q
+             JOIN {course_modules} cm ON cm.instance = q.id
+             JOIN {modules} m ON m.id = cm.module AND m.name = 'quiz'
+             WHERE q.password IS NOT NULL AND q.password != ''
+             AND cm.visible = 1
+             ORDER BY q.timemodified DESC",
+            null, 0, 1
+        );
+        $active_quiz = !empty($active_quizzes) ? reset($active_quizzes) : null;
 
-    if ($active_quiz) {
-        $is_enrolled = is_enrolled(context_course::instance($active_quiz->course), $USER->id, '', true);
-        if ($is_enrolled) {
-            $url = new moodle_url('/mod/quiz/view.php', ['id' => $active_quiz->cmid]);
-            redirect($url);
+        if ($active_quiz) {
+            $is_enrolled = is_enrolled(\context_course::instance($active_quiz->course), $USER->id, '', true);
+            if ($is_enrolled) {
+                $url = new \moodle_url('/mod/quiz/view.php', ['id' => $active_quiz->cmid]);
+                redirect($url);
+            }
         }
+    } catch (\Throwable $e) {
+        // Fall through to waiting room
     }
 
     // No active quiz — redirect to waiting page
-    $waiting_url = new moodle_url('/local/cbt_kiosk/waiting.php');
-    $current_url = new moodle_url($CFG->wwwroot . str_replace($moodle_root, '', $script));
+    $waiting_url = new \moodle_url('/local/cbt_kiosk/waiting.php');
 
     // Avoid redirect loop
     if (strpos($rel, '/local/cbt_kiosk/') === false) {
@@ -111,92 +116,109 @@ function local_cbt_kiosk_after_config(): void {
 function local_cbt_kiosk_before_footer(): string {
     global $PAGE, $USER, $DB;
 
-    // Only inject on quiz attempt and summary pages
-    if (!isset($PAGE->pagetype)) {
+    // Detect if we are on quiz attempt or summary page
+    $pagetype = '';
+    try {
+        $pagetype = (string)$PAGE->pagetype;
+    } catch (\Throwable $e) {
+        $pagetype = '';
+    }
+
+    $script = $_SERVER['SCRIPT_NAME'] ?? '';
+    $is_quiz_attempt = ($pagetype === 'mod-quiz-attempt' || $pagetype === 'mod-quiz-summary'
+        || strpos($script, '/mod/quiz/attempt.php') !== false
+        || strpos($script, '/mod/quiz/summary.php') !== false);
+
+    if (!$is_quiz_attempt) {
         return '';
     }
 
-    $target_pagetypes = ['mod-quiz-attempt', 'mod-quiz-summary'];
-    if (!in_array($PAGE->pagetype, $target_pagetypes)) {
+    // Must be logged in (not guest)
+    if (!isloggedin() || isguestuser()) {
         return '';
     }
 
-    // Do NOT lock administrators or teachers/managers
-    if (!isloggedin() || isguestuser() || is_siteadmin()) {
-        return '';
-    }
+    // Check if user is teacher or admin (for test/preview mode)
+    $isAdmin = is_siteadmin($USER->id);
+    $has_privilege = false;
+    try {
+        $has_privilege = $DB->record_exists_sql(
+            "SELECT ra.id FROM {role_assignments} ra WHERE ra.userid = :uid AND ra.roleid IN (1, 2, 3, 4)",
+            ['uid' => $USER->id]
+        );
+    } catch (\Throwable $e) {}
 
-    // Check if user has teacher role
-    $has_privilege = $DB->record_exists_sql(
-        "SELECT ra.id FROM {role_assignments} ra WHERE ra.userid = :uid AND ra.roleid IN (1, 2, 3, 4) LIMIT 1",
-        ['uid' => $USER->id]
-    );
-    if ($has_privilege) {
-        return '';
-    }
+    $isPrivileged = ($isAdmin || $has_privilege);
 
     // Get current quiz unlock password / active token
     $quizpassword = '';
-    if (isset($PAGE->cm->instance)) {
-        $quiz = $DB->get_record('quiz', ['id' => $PAGE->cm->instance], 'id, password');
-        if ($quiz && !empty($quiz->password)) {
-            $quizpassword = (string)$quiz->password;
+    try {
+        $cm = $PAGE->cm;
+        if ($cm && !empty($cm->instance)) {
+            $quiz = $DB->get_record('quiz', ['id' => $cm->instance], 'id, password');
+            if ($quiz && !empty($quiz->password)) {
+                $quizpassword = (string)$quiz->password;
+            }
         }
-    }
+    } catch (\Throwable $e) {}
 
-    return local_cbt_kiosk_render_anticheat($quizpassword);
+    return local_cbt_kiosk_render_anticheat($quizpassword, $isPrivileged);
 }
 
 /**
  * Render anti-cheat UI elements, tab-switch tracker, and proctor unlock modal.
  *
  * @param string $quizpassword
+ * @param bool $isPrivileged True if user is teacher/admin testing the quiz
  * @return string
  */
-function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
+function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileged = false): string {
     $safeToken = htmlspecialchars($quizpassword, ENT_QUOTES, 'UTF-8');
+    $privilegedFlag = $isPrivileged ? 'true' : 'false';
 
     return <<<HTML
 <!-- ===== CBT KIOSK ANTI-CHEAT LOCKDOWN SYSTEM ===== -->
 <style>
 @keyframes cbtPulseGlow {
     0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
-    50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+    50% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
 }
 @keyframes cbtShake {
     0%, 100% { transform: translateX(0); }
-    20%, 60% { transform: translateX(-8px); }
-    40%, 80% { transform: translateX(8px); }
+    20%, 60% { transform: translateX(-10px); }
+    40%, 80% { transform: translateX(10px); }
 }
+.cbt-exam-locked #page,
 .cbt-exam-locked #region-main,
 .cbt-exam-locked .que,
-.cbt-exam-locked form {
-    filter: blur(12px) !important;
+.cbt-exam-locked form,
+.cbt-exam-locked .drawer-content {
+    filter: blur(14px) !important;
     pointer-events: none !important;
     user-select: none !important;
 }
 #cbt-toast-container {
     position: fixed;
-    top: 20px;
-    right: 20px;
-    z-index: 99999999;
+    top: 24px;
+    right: 24px;
+    z-index: 2147483647;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
     pointer-events: none;
-    font-family: 'Inter', -apple-system, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 .cbt-toast {
     background: #1e293b;
     border: 1px solid #ef4444;
-    color: #f87171;
-    padding: 10px 16px;
-    border-radius: 8px;
-    font-size: 13px;
+    color: #fca5a5;
+    padding: 12px 18px;
+    border-radius: 10px;
+    font-size: 13.5px;
     font-weight: 600;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    box-shadow: 0 12px 30px rgba(0,0,0,0.6);
     opacity: 0;
-    transform: translateY(-10px);
+    transform: translateY(-12px);
     transition: all 0.25s ease;
 }
 .cbt-toast.show {
@@ -208,52 +230,63 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
 <div id="cbt-toast-container"></div>
 
 <!-- Floating Status Badge -->
-<div id="cbt-status-badge" style="position:fixed;bottom:16px;right:16px;z-index:99998;background:#1e293b;border:1px solid #334155;border-radius:24px;padding:8px 16px;display:flex;align-items:center;gap:8px;font-family:'Inter',sans-serif;font-size:12px;color:#e2e8f0;box-shadow:0 8px 24px rgba(0,0,0,0.4);user-select:none;">
+<div id="cbt-status-badge" style="position:fixed;bottom:16px;right:16px;z-index:2147483640;background:#1e293b;border:1px solid #334155;border-radius:24px;padding:8px 16px;display:flex;align-items:center;gap:8px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:12px;color:#e2e8f0;box-shadow:0 8px 24px rgba(0,0,0,0.5);user-select:none;">
     <span style="width:8px;height:8px;border-radius:50%;background:#10b981;box-shadow:0 0 8px #10b981;"></span>
-    <span>Anti-Cheat Aktif</span>
+    <span style="font-weight:600;">Anti-Cheat Aktif</span>
     <span style="color:#64748b;">|</span>
-    <span id="cbt-tab-counter" style="color:#f59e0b;font-weight:600;">Pelanggaran Tab: 0/3</span>
+    <span id="cbt-tab-counter" style="color:#10b981;font-weight:700;">Pelanggaran Tab: 0/3</span>
+    <span id="cbt-admin-tag" style="display:none;background:#3b82f6;color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">MODE PENGUJI</span>
 </div>
 
 <!-- Modal Peringatan Berpindah Tab (Pelanggaran 1 & 2) -->
-<div id="cbt-warning-modal" style="display:none;position:fixed;inset:0;z-index:999999;background:rgba(15,23,42,0.88);backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:16px;font-family:'Inter',sans-serif;">
-    <div style="background:#1e293b;border:2px solid #ef4444;border-radius:18px;max-width:460px;width:100%;padding:28px 24px;text-align:center;box-shadow:0 25px 60px rgba(239,68,68,0.3);animation:cbtShake 0.4s ease-in-out;">
-        <div style="width:64px;height:64px;border-radius:50%;background:rgba(239,68,68,0.15);border:2px solid #ef4444;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:30px;animation:cbtPulseGlow 1.5s infinite;">
+<div id="cbt-warning-modal" style="display:none;position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483645;background:rgba(15,23,42,0.92);backdrop-filter:blur(8px);align-items:center;justify-content:center;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;box-sizing:border-box;">
+    <div style="background:#1e293b;border:2px solid #ef4444;border-radius:20px;max-width:480px;width:100%;padding:32px 26px;text-align:center;box-shadow:0 25px 70px rgba(239,68,68,0.35);animation:cbtShake 0.4s ease-in-out;">
+        <div style="width:70px;height:70px;border-radius:50%;background:rgba(239,68,68,0.15);border:2px solid #ef4444;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:34px;animation:cbtPulseGlow 1.5s infinite;">
             ⚠️
         </div>
-        <h3 id="cbt-warn-title" style="color:#fff;font-size:18px;font-weight:700;margin-bottom:8px;">PERINGATAN PELANGGARAN TAB</h3>
-        <p id="cbt-warn-msg" style="color:#cbd5e1;font-size:13.5px;line-height:1.6;margin-bottom:16px;">
-            Anda terdeteksi meninggalkan halaman ujian! Dilarang membuka tab lain, aplikasi lain, atau meminimalkan browser selama ujian berlangsung.
+        <h3 id="cbt-warn-title" style="color:#fff;font-size:20px;font-weight:800;margin:0 0 10px;letter-spacing:0.02em;">PERINGATAN PELANGGARAN TAB</h3>
+        <p id="cbt-warn-msg" style="color:#cbd5e1;font-size:14px;line-height:1.6;margin:0 0 18px;">
+            Anda terdeteksi meninggalkan halaman ujian! Dilarang membuka tab lain, membuka aplikasi lain, atau meminimalkan browser selama ujian berlangsung.
         </p>
-        <div id="cbt-warn-rem" style="background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px 14px;color:#f59e0b;font-size:13px;font-weight:600;margin-bottom:20px;">
+        <div id="cbt-warn-rem" style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:12px 16px;color:#f59e0b;font-size:13.5px;font-weight:700;margin-bottom:22px;">
             Sisa toleransi: 2 kesempatan lagi!
         </div>
-        <button type="button" id="cbt-dismiss-warn-btn" style="width:100%;padding:12px;background:#ef4444;border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;transition:background 0.2s;">
+        <button type="button" id="cbt-dismiss-warn-btn" style="width:100%;padding:13px;background:#ef4444;border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;transition:background 0.2s;box-shadow:0 4px 14px rgba(239,68,68,0.4);">
             Saya Mengerti, Kembali ke Ujian
         </button>
+        <div id="cbt-admin-dismiss-box" style="display:none;margin-top:10px;">
+            <button type="button" id="cbt-admin-dismiss-btn" style="width:100%;padding:8px;background:#334155;border:1px solid #475569;border-radius:8px;color:#94a3b8;font-size:12px;font-weight:600;cursor:pointer;">
+                [Mode Admin/Guru: Abaikan Peringatan]
+            </button>
+        </div>
     </div>
 </div>
 
 <!-- Modal Lembar Ujian Terkunci (Pelanggaran 3x) -->
-<div id="cbt-lock-overlay" style="display:none;position:fixed;inset:0;z-index:9999999;background:#0f172a;align-items:center;justify-content:center;padding:16px;font-family:'Inter',sans-serif;">
-    <div style="background:#1e293b;border:2px solid #ef4444;border-radius:20px;max-width:480px;width:100%;padding:36px 28px;text-align:center;box-shadow:0 25px 70px rgba(0,0,0,0.8);">
-        <div style="width:76px;height:76px;border-radius:50%;background:rgba(239,68,68,0.15);border:2px solid #ef4444;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:36px;animation:cbtPulseGlow 1.5s infinite;">
+<div id="cbt-lock-overlay" style="display:none;position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483646;background:#0f172a;align-items:center;justify-content:center;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;box-sizing:border-box;">
+    <div style="background:#1e293b;border:2px solid #ef4444;border-radius:22px;max-width:500px;width:100%;padding:38px 30px;text-align:center;box-shadow:0 30px 80px rgba(0,0,0,0.85);">
+        <div style="width:80px;height:80px;border-radius:50%;background:rgba(239,68,68,0.15);border:2px solid #ef4444;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:40px;animation:cbtPulseGlow 1.5s infinite;">
             🔒
         </div>
-        <h2 style="color:#ef4444;font-size:22px;font-weight:800;letter-spacing:0.04em;margin-bottom:8px;">LEMBAR UJIAN TERKUNCI!</h2>
-        <p style="color:#94a3b8;font-size:13.5px;line-height:1.6;margin-bottom:24px;">
-            Anda telah melakukan perpindahan tab sebanyak <strong>3 kali</strong> (melebihi batas toleransi). Lembar ujian Anda telah dikunci oleh sistem.<br><br>
-            <span style="color:#f87171;font-weight:600;">Silakan panggil Pengawas / Proktor Ruangan untuk membuka kunci ujian Anda.</span>
+        <h2 style="color:#ef4444;font-size:24px;font-weight:900;letter-spacing:0.04em;margin:0 0 10px;">LEMBAR UJIAN TERKUNCI!</h2>
+        <p style="color:#94a3b8;font-size:14px;line-height:1.6;margin:0 0 24px;">
+            Anda telah melakukan perpindahan tab sebanyak <strong style="color:#f87171;">3 kali</strong> (melebihi batas toleransi). Lembar ujian Anda telah dikunci oleh sistem.<br><br>
+            <span style="color:#f87171;font-weight:700;">Silakan panggil Pengawas / Proktor Ruangan untuk membuka kunci ujian Anda.</span>
         </p>
-        <div style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:20px;text-align:left;">
-            <label for="cbt-proctor-pin" style="display:block;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">
+        <div style="background:#0f172a;border:1px solid #334155;border-radius:14px;padding:22px;text-align:left;">
+            <label for="cbt-proctor-pin" style="display:block;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">
                 PIN / Token Pengawas (Buka Kunci)
             </label>
-            <input type="password" id="cbt-proctor-pin" placeholder="Masukkan PIN Pengawas / Token CBT" autocomplete="off" style="width:100%;padding:12px 14px;background:#1e293b;border:1px solid #475569;border-radius:8px;color:#fff;font-size:15px;margin-bottom:12px;outline:none;box-sizing:border-box;">
-            <div id="cbt-unlock-error" style="display:none;color:#ef4444;font-size:12px;margin-bottom:12px;font-weight:600;"></div>
-            <button type="button" id="cbt-unlock-btn" style="width:100%;padding:12px;background:linear-gradient(135deg, #10b981, #059669);border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;">
+            <input type="password" id="cbt-proctor-pin" placeholder="Masukkan PIN Pengawas / Token CBT" autocomplete="off" style="width:100%;padding:13px 15px;background:#1e293b;border:1px solid #475569;border-radius:10px;color:#fff;font-size:15px;margin-bottom:12px;outline:none;box-sizing:border-box;">
+            <div id="cbt-unlock-error" style="display:none;color:#ef4444;font-size:12.5px;margin-bottom:12px;font-weight:600;"></div>
+            <button type="button" id="cbt-unlock-btn" style="width:100%;padding:13px;background:linear-gradient(135deg, #10b981, #059669);border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(16,185,129,0.35);">
                 Buka Kunci Ujian
             </button>
+            <div id="cbt-admin-unlock-box" style="display:none;margin-top:12px;">
+                <button type="button" id="cbt-admin-unlock-btn" style="width:100%;padding:9px;background:#334155;border:1px solid #475569;border-radius:8px;color:#38bdf8;font-size:12px;font-weight:700;cursor:pointer;">
+                    [Buka Kunci Instan (Mode Penguji/Admin)]
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -263,23 +296,70 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
     'use strict';
 
     var activeQuizToken = '{$safeToken}';
-    var MAX_VIOLATIONS = 3;
-    var attemptKey = window.location.pathname + window.location.search;
-    var STORAGE_COUNT = 'cbt_tab_violations_' + attemptKey;
-    var STORAGE_LOCKED = 'cbt_locked_' + attemptKey;
+    var isPrivileged    = {$privilegedFlag};
+    var MAX_VIOLATIONS  = 3;
+    var attemptKey      = window.location.pathname + window.location.search;
+    var STORAGE_COUNT   = 'cbt_tab_violations_' + attemptKey;
+    var STORAGE_LOCKED  = 'cbt_locked_' + attemptKey;
 
     var currentViolations = parseInt(sessionStorage.getItem(STORAGE_COUNT) || '0', 10);
-    var isLocked = sessionStorage.getItem(STORAGE_LOCKED) === 'true';
-    var lastTriggerTime = 0;
+    var isLocked          = sessionStorage.getItem(STORAGE_LOCKED) === 'true';
+    var lastTriggerTime   = 0;
+    var originalTitle     = document.title;
+    var titleInterval     = null;
 
     var counterBadge = document.getElementById('cbt-tab-counter');
-    var warnModal = document.getElementById('cbt-warning-modal');
-    var warnTitle = document.getElementById('cbt-warn-title');
-    var warnMsg = document.getElementById('cbt-warn-msg');
-    var warnRem = document.getElementById('cbt-warn-rem');
-    var lockOverlay = document.getElementById('cbt-lock-overlay');
-    var pinInput = document.getElementById('cbt-proctor-pin');
-    var unlockErr = document.getElementById('cbt-unlock-error');
+    var adminTag     = document.getElementById('cbt-admin-tag');
+    var warnModal    = document.getElementById('cbt-warning-modal');
+    var warnTitle    = document.getElementById('cbt-warn-title');
+    var warnRem      = document.getElementById('cbt-warn-rem');
+    var lockOverlay  = document.getElementById('cbt-lock-overlay');
+    var pinInput     = document.getElementById('cbt-proctor-pin');
+    var unlockErr    = document.getElementById('cbt-unlock-error');
+    var adminDismiss = document.getElementById('cbt-admin-dismiss-box');
+    var adminUnlock  = document.getElementById('cbt-admin-unlock-box');
+
+    if (isPrivileged) {
+        if (adminTag) adminTag.style.display = 'inline-block';
+        if (adminDismiss) adminDismiss.style.display = 'block';
+        if (adminUnlock) adminUnlock.style.display = 'block';
+    }
+
+    function playBeep() {
+        try {
+            var AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            var ctx = new AudioContext();
+            var osc = ctx.createOscillator();
+            var gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(440, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.3);
+            gain.gain.setValueAtTime(0.25, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.3);
+        } catch (e) {}
+    }
+
+    function startTitleAlert() {
+        if (titleInterval) return;
+        var toggle = false;
+        titleInterval = setInterval(function() {
+            document.title = toggle ? '⚠️ PERINGATAN KEMBALI KE UJIAN!' : '🚨 DILARANG BUKA TAB LAIN!';
+            toggle = !toggle;
+        }, 800);
+    }
+
+    function stopTitleAlert() {
+        if (titleInterval) {
+            clearInterval(titleInterval);
+            titleInterval = null;
+        }
+        document.title = originalTitle;
+    }
 
     function updateBadge() {
         if (counterBadge) {
@@ -315,6 +395,7 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
         if (lockOverlay) lockOverlay.style.display = 'flex';
         document.body.classList.add('cbt-exam-locked');
         updateBadge();
+        playBeep();
         if (pinInput) {
             pinInput.value = '';
             pinInput.focus();
@@ -328,6 +409,7 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
         if (warnRem) warnRem.textContent = 'Sisa toleransi: ' + remaining + ' kesempatan lagi! Pelanggaran ke-3 akan MENGUNCI ujian.';
         if (warnModal) warnModal.style.display = 'flex';
         updateBadge();
+        playBeep();
     }
 
     function triggerViolation() {
@@ -360,6 +442,25 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
     if (dismissBtn) {
         dismissBtn.addEventListener('click', function() {
             if (warnModal) warnModal.style.display = 'none';
+            stopTitleAlert();
+        });
+    }
+
+    // Admin direct dismiss button
+    var adminDismissBtn = document.getElementById('cbt-admin-dismiss-btn');
+    if (adminDismissBtn) {
+        adminDismissBtn.addEventListener('click', function() {
+            if (warnModal) warnModal.style.display = 'none';
+            stopTitleAlert();
+            showToast('Peringatan diabaikan (Mode Penguji/Admin).');
+        });
+    }
+
+    // Admin instant unlock button
+    var adminUnlockBtn = document.getElementById('cbt-admin-unlock-btn');
+    if (adminUnlockBtn) {
+        adminUnlockBtn.addEventListener('click', function() {
+            unlockSuccess('Kunci dibuka via Mode Penguji/Admin.');
         });
     }
 
@@ -377,6 +478,22 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
         });
     }
 
+    function unlockSuccess(msg) {
+        isLocked = false;
+        sessionStorage.setItem(STORAGE_LOCKED, 'false');
+        // Give student 1 final chance (set violations to 2 of 3)
+        currentViolations = MAX_VIOLATIONS - 1;
+        sessionStorage.setItem(STORAGE_COUNT, currentViolations.toString());
+
+        if (lockOverlay) lockOverlay.style.display = 'none';
+        document.body.classList.remove('cbt-exam-locked');
+        if (unlockErr) unlockErr.style.display = 'none';
+        if (pinInput) pinInput.value = '';
+        stopTitleAlert();
+        updateBadge();
+        showToast(msg || 'Ujian berhasil dibuka kembali oleh Pengawas. Harap fokus pada ujian!');
+    }
+
     function performUnlock() {
         var entered = (pinInput ? pinInput.value : '').trim().toUpperCase();
         var validPins = ['PROKTOR123', 'CBT2026', '123456'];
@@ -387,18 +504,7 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
         var isCorrect = validPins.indexOf(entered) !== -1;
 
         if (isCorrect) {
-            isLocked = false;
-            sessionStorage.setItem(STORAGE_LOCKED, 'false');
-            // Give student 1 final chance (set violations to 2 of 3)
-            currentViolations = MAX_VIOLATIONS - 1;
-            sessionStorage.setItem(STORAGE_COUNT, currentViolations.toString());
-
-            if (lockOverlay) lockOverlay.style.display = 'none';
-            document.body.classList.remove('cbt-exam-locked');
-            if (unlockErr) unlockErr.style.display = 'none';
-            if (pinInput) pinInput.value = '';
-            updateBadge();
-            showToast('Ujian berhasil dibuka kembali oleh Pengawas. Harap fokus pada ujian!');
+            unlockSuccess('Ujian berhasil dibuka kembali oleh Pengawas. Harap fokus!');
         } else {
             if (unlockErr) {
                 unlockErr.textContent = 'PIN / Token Pengawas salah! Silakan panggil proktor ruangan.';
@@ -411,16 +517,34 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
         }
     }
 
-    // 1. Detect Tab Visibility Change (switched to another tab or minimized)
+    // 1. Detect Tab Visibility Change
     document.addEventListener('visibilitychange', function() {
         if (document.hidden) {
+            startTitleAlert();
             triggerViolation();
+        } else {
+            stopTitleAlert();
+            // When student switches BACK, ensure modal is visible if violation occurred
+            if (isLocked) {
+                if (lockOverlay) lockOverlay.style.display = 'flex';
+            } else if (currentViolations > 0 && currentViolations < MAX_VIOLATIONS) {
+                if (warnModal) warnModal.style.display = 'flex';
+            }
         }
     });
 
-    // 2. Detect Window Blur (clicking outside, Alt+Tab, opening apps in split-screen)
+    // 2. Detect Window Blur (clicking outside, Alt+Tab, opening other apps)
     window.addEventListener('blur', function() {
         triggerViolation();
+    });
+
+    window.addEventListener('focus', function() {
+        stopTitleAlert();
+        if (isLocked) {
+            if (lockOverlay) lockOverlay.style.display = 'flex';
+        } else if (currentViolations > 0 && currentViolations < MAX_VIOLATIONS) {
+            if (warnModal) warnModal.style.display = 'flex';
+        }
     });
 
     // 3. Block Right-Click Context Menu
@@ -443,7 +567,7 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
         return false;
     });
 
-    // 5. Block Keyboard Shortcuts (F12, Inspect, Print, View Source)
+    // 5. Block Keyboard Shortcuts (F12, Inspect, Print, View Source, Save)
     document.addEventListener('keydown', function(e) {
         // F12 Developer Tools
         if (e.key === 'F12' || e.keyCode === 123) {
@@ -479,4 +603,3 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword): string {
 <!-- ===== END CBT KIOSK ANTI-CHEAT ===== -->
 HTML;
 }
-
