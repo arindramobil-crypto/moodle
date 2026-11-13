@@ -110,6 +110,7 @@ function local_cbt_kiosk_after_config(): void {
 /**
  * Hook before_footer: Injects anti-cheat tab-lockdown on quiz attempt pages.
  * Detects tab switching, minimizes, app blurring, and locks the quiz after 3 violations.
+ * Fully optimized for both desktop and mobile phone (HP) browsers.
  *
  * @return string
  */
@@ -188,25 +189,46 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
     20%, 60% { transform: translateX(-10px); }
     40%, 80% { transform: translateX(10px); }
 }
-.cbt-exam-locked #page,
+
+/* Exam content blurred when locked - DO NOT blur #page to prevent breaking child overlays */
+.cbt-exam-locked #page-content,
 .cbt-exam-locked #region-main,
 .cbt-exam-locked .que,
-.cbt-exam-locked form,
-.cbt-exam-locked .drawer-content {
+.cbt-exam-locked form.mform,
+.cbt-exam-locked .submitbtns,
+.cbt-exam-locked .drawer-content,
+.cbt-exam-locked .activity-header,
+.cbt-exam-locked .secondary-navigation {
     filter: blur(14px) !important;
     pointer-events: none !important;
     user-select: none !important;
+    -webkit-user-select: none !important;
 }
+
+/* CRITICAL MOBILE FIX: Force overlays, modals, and inputs to be fully interactive and clickable on phones */
+#cbt-lock-overlay,
+#cbt-lock-overlay *,
+#cbt-warning-modal,
+#cbt-warning-modal *,
+#cbt-status-badge,
+#cbt-status-badge * {
+    pointer-events: auto !important;
+    filter: none !important;
+    user-select: auto !important;
+    -webkit-user-select: auto !important;
+}
+
 #cbt-toast-container {
     position: fixed;
-    top: 24px;
-    right: 24px;
+    top: 20px;
+    right: 20px;
     z-index: 2147483647;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
     pointer-events: none;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    max-width: 90vw;
 }
 .cbt-toast {
     background: #1e293b;
@@ -225,6 +247,76 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
     opacity: 1;
     transform: translateY(0);
 }
+
+/* Modal Overlay base - scrollable on mobile when virtual keyboard opens */
+.cbt-modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100vw;
+    height: 100%;
+    min-height: 100vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    box-sizing: border-box;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Card inside modal */
+.cbt-modal-card {
+    background: #1e293b;
+    border: 2px solid #ef4444;
+    border-radius: 22px;
+    max-width: 480px;
+    width: 100%;
+    padding: 32px 24px;
+    text-align: center;
+    box-shadow: 0 25px 70px rgba(0,0,0,0.85);
+    box-sizing: border-box;
+    margin: auto;
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 600px) {
+    .cbt-modal-overlay {
+        padding: 12px 10px !important;
+        align-items: flex-start !important;
+    }
+    .cbt-modal-card {
+        padding: 22px 16px !important;
+        border-radius: 16px !important;
+        margin-top: 10px !important;
+        margin-bottom: 20px !important;
+    }
+    .cbt-card-icon {
+        width: 54px !important;
+        height: 54px !important;
+        font-size: 28px !important;
+        margin-bottom: 12px !important;
+    }
+    .cbt-card-title {
+        font-size: 18px !important;
+        margin-bottom: 8px !important;
+    }
+    .cbt-card-desc {
+        font-size: 13px !important;
+        margin-bottom: 16px !important;
+        line-height: 1.5 !important;
+    }
+    #cbt-status-badge {
+        bottom: 10px !important;
+        right: 10px !important;
+        padding: 6px 12px !important;
+        font-size: 11px !important;
+        border-radius: 16px !important;
+    }
+}
 </style>
 
 <div id="cbt-toast-container"></div>
@@ -239,23 +331,23 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
 </div>
 
 <!-- Modal Peringatan Berpindah Tab (Pelanggaran 1 & 2) -->
-<div id="cbt-warning-modal" style="display:none;position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483645;background:rgba(15,23,42,0.92);backdrop-filter:blur(8px);align-items:center;justify-content:center;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;box-sizing:border-box;">
-    <div style="background:#1e293b;border:2px solid #ef4444;border-radius:20px;max-width:480px;width:100%;padding:32px 26px;text-align:center;box-shadow:0 25px 70px rgba(239,68,68,0.35);animation:cbtShake 0.4s ease-in-out;">
-        <div style="width:70px;height:70px;border-radius:50%;background:rgba(239,68,68,0.15);border:2px solid #ef4444;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:34px;animation:cbtPulseGlow 1.5s infinite;">
+<div id="cbt-warning-modal" class="cbt-modal-overlay" style="z-index:2147483645;background:rgba(15,23,42,0.92);backdrop-filter:blur(8px);">
+    <div class="cbt-modal-card" style="animation:cbtShake 0.4s ease-in-out;">
+        <div class="cbt-card-icon" style="width:70px;height:70px;border-radius:50%;background:rgba(239,68,68,0.15);border:2px solid #ef4444;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:34px;animation:cbtPulseGlow 1.5s infinite;">
             ⚠️
         </div>
-        <h3 id="cbt-warn-title" style="color:#fff;font-size:20px;font-weight:800;margin:0 0 10px;letter-spacing:0.02em;">PERINGATAN PELANGGARAN TAB</h3>
-        <p id="cbt-warn-msg" style="color:#cbd5e1;font-size:14px;line-height:1.6;margin:0 0 18px;">
+        <h3 id="cbt-warn-title" class="cbt-card-title" style="color:#fff;font-size:20px;font-weight:800;margin:0 0 10px;letter-spacing:0.02em;">PERINGATAN PELANGGARAN TAB</h3>
+        <p id="cbt-warn-msg" class="cbt-card-desc" style="color:#cbd5e1;font-size:14px;line-height:1.6;margin:0 0 16px;">
             Anda terdeteksi meninggalkan halaman ujian! Dilarang membuka tab lain, membuka aplikasi lain, atau meminimalkan browser selama ujian berlangsung.
         </p>
-        <div id="cbt-warn-rem" style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:12px 16px;color:#f59e0b;font-size:13.5px;font-weight:700;margin-bottom:22px;">
+        <div id="cbt-warn-rem" style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:12px 14px;color:#f59e0b;font-size:13.5px;font-weight:700;margin-bottom:18px;">
             Sisa toleransi: 2 kesempatan lagi!
         </div>
-        <button type="button" id="cbt-dismiss-warn-btn" style="width:100%;padding:13px;background:#ef4444;border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;transition:background 0.2s;box-shadow:0 4px 14px rgba(239,68,68,0.4);">
+        <button type="button" id="cbt-dismiss-warn-btn" style="width:100%;padding:14px;background:#ef4444;border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;transition:background 0.2s;box-shadow:0 4px 14px rgba(239,68,68,0.4);touch-action:manipulation;">
             Saya Mengerti, Kembali ke Ujian
         </button>
         <div id="cbt-admin-dismiss-box" style="display:none;margin-top:10px;">
-            <button type="button" id="cbt-admin-dismiss-btn" style="width:100%;padding:8px;background:#334155;border:1px solid #475569;border-radius:8px;color:#94a3b8;font-size:12px;font-weight:600;cursor:pointer;">
+            <button type="button" id="cbt-admin-dismiss-btn" style="width:100%;padding:10px;background:#334155;border:1px solid #475569;border-radius:8px;color:#94a3b8;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation;">
                 [Mode Admin/Guru: Abaikan Peringatan]
             </button>
         </div>
@@ -263,27 +355,49 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
 </div>
 
 <!-- Modal Lembar Ujian Terkunci (Pelanggaran 3x) -->
-<div id="cbt-lock-overlay" style="display:none;position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483646;background:#0f172a;align-items:center;justify-content:center;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;box-sizing:border-box;">
-    <div style="background:#1e293b;border:2px solid #ef4444;border-radius:22px;max-width:500px;width:100%;padding:38px 30px;text-align:center;box-shadow:0 30px 80px rgba(0,0,0,0.85);">
-        <div style="width:80px;height:80px;border-radius:50%;background:rgba(239,68,68,0.15);border:2px solid #ef4444;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:40px;animation:cbtPulseGlow 1.5s infinite;">
+<div id="cbt-lock-overlay" class="cbt-modal-overlay" style="z-index:2147483646;background:#0f172a;">
+    <div class="cbt-modal-card">
+        <div class="cbt-card-icon" style="width:76px;height:76px;border-radius:50%;background:rgba(239,68,68,0.15);border:2px solid #ef4444;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:38px;animation:cbtPulseGlow 1.5s infinite;">
             🔒
         </div>
-        <h2 style="color:#ef4444;font-size:24px;font-weight:900;letter-spacing:0.04em;margin:0 0 10px;">LEMBAR UJIAN TERKUNCI!</h2>
-        <p style="color:#94a3b8;font-size:14px;line-height:1.6;margin:0 0 24px;">
+        <h2 class="cbt-card-title" style="color:#ef4444;font-size:23px;font-weight:900;letter-spacing:0.04em;margin:0 0 10px;">LEMBAR UJIAN TERKUNCI!</h2>
+        <p class="cbt-card-desc" style="color:#94a3b8;font-size:14px;line-height:1.6;margin:0 0 20px;">
             Anda telah melakukan perpindahan tab sebanyak <strong style="color:#f87171;">3 kali</strong> (melebihi batas toleransi). Lembar ujian Anda telah dikunci oleh sistem.<br><br>
             <span style="color:#f87171;font-weight:700;">Silakan panggil Pengawas / Proktor Ruangan untuk membuka kunci ujian Anda.</span>
         </p>
-        <div style="background:#0f172a;border:1px solid #334155;border-radius:14px;padding:22px;text-align:left;">
+
+        <div style="background:#0f172a;border:1px solid #334155;border-radius:14px;padding:18px;text-align:left;">
             <label for="cbt-proctor-pin" style="display:block;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">
                 PIN / Token Pengawas (Buka Kunci)
             </label>
-            <input type="password" id="cbt-proctor-pin" placeholder="Masukkan PIN Pengawas / Token CBT" autocomplete="off" style="width:100%;padding:13px 15px;background:#1e293b;border:1px solid #475569;border-radius:10px;color:#fff;font-size:15px;margin-bottom:12px;outline:none;box-sizing:border-box;">
-            <div id="cbt-unlock-error" style="display:none;color:#ef4444;font-size:12.5px;margin-bottom:12px;font-weight:600;"></div>
-            <button type="button" id="cbt-unlock-btn" style="width:100%;padding:13px;background:linear-gradient(135deg, #10b981, #059669);border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(16,185,129,0.35);">
+
+            <!-- Input Container with Password Visibility Toggle for Mobile/HP -->
+            <div style="position:relative;margin-bottom:12px;">
+                <input type="password"
+                       id="cbt-proctor-pin"
+                       placeholder="Masukkan PIN / Token Pengawas"
+                       autocomplete="off"
+                       autocorrect="off"
+                       autocapitalize="characters"
+                       spellcheck="false"
+                       inputmode="text"
+                       style="width:100%;padding:14px 44px 14px 14px;background:#1e293b;border:2px solid #475569;border-radius:10px;color:#fff;font-size:16px !important;outline:none;box-sizing:border-box;touch-action:manipulation;-webkit-appearance:none;">
+                <button type="button"
+                        id="cbt-toggle-pwd"
+                        title="Tampilkan PIN"
+                        style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer;padding:8px;line-height:1;touch-action:manipulation;">
+                    👁️
+                </button>
+            </div>
+
+            <div id="cbt-unlock-error" style="display:none;color:#ef4444;font-size:13px;margin-bottom:12px;font-weight:600;"></div>
+
+            <button type="button" id="cbt-unlock-btn" style="width:100%;padding:14px;background:linear-gradient(135deg, #10b981, #059669);border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(16,185,129,0.35);touch-action:manipulation;">
                 Buka Kunci Ujian
             </button>
+
             <div id="cbt-admin-unlock-box" style="display:none;margin-top:12px;">
-                <button type="button" id="cbt-admin-unlock-btn" style="width:100%;padding:9px;background:#334155;border:1px solid #475569;border-radius:8px;color:#38bdf8;font-size:12px;font-weight:700;cursor:pointer;">
+                <button type="button" id="cbt-admin-unlock-btn" style="width:100%;padding:10px;background:#334155;border:1px solid #475569;border-radius:8px;color:#38bdf8;font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation;">
                     [Buka Kunci Instan (Mode Penguji/Admin)]
                 </button>
             </div>
@@ -315,14 +429,43 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
     var warnRem      = document.getElementById('cbt-warn-rem');
     var lockOverlay  = document.getElementById('cbt-lock-overlay');
     var pinInput     = document.getElementById('cbt-proctor-pin');
+    var togglePwd    = document.getElementById('cbt-toggle-pwd');
     var unlockErr    = document.getElementById('cbt-unlock-error');
     var adminDismiss = document.getElementById('cbt-admin-dismiss-box');
     var adminUnlock  = document.getElementById('cbt-admin-unlock-box');
+
+    // CRITICAL FIX FOR MOBILE: Move modals directly under <body> so they escape #page pointer-events or blur
+    if (lockOverlay && lockOverlay.parentElement !== document.body) {
+        document.body.appendChild(lockOverlay);
+    }
+    if (warnModal && warnModal.parentElement !== document.body) {
+        document.body.appendChild(warnModal);
+    }
+    var statusBadge = document.getElementById('cbt-status-badge');
+    if (statusBadge && statusBadge.parentElement !== document.body) {
+        document.body.appendChild(statusBadge);
+    }
 
     if (isPrivileged) {
         if (adminTag) adminTag.style.display = 'inline-block';
         if (adminDismiss) adminDismiss.style.display = 'block';
         if (adminUnlock) adminUnlock.style.display = 'block';
+    }
+
+    // Toggle password visibility (useful for touchscreen/HP)
+    if (togglePwd && pinInput) {
+        togglePwd.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (pinInput.type === 'password') {
+                pinInput.type = 'text';
+                togglePwd.textContent = '🔒';
+                togglePwd.title = 'Sembunyikan PIN';
+            } else {
+                pinInput.type = 'password';
+                togglePwd.textContent = '👁️';
+                togglePwd.title = 'Tampilkan PIN';
+            }
+        });
     }
 
     function playBeep() {
@@ -392,13 +535,19 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
         isLocked = true;
         sessionStorage.setItem(STORAGE_LOCKED, 'true');
         if (warnModal) warnModal.style.display = 'none';
-        if (lockOverlay) lockOverlay.style.display = 'flex';
+        if (lockOverlay) {
+            lockOverlay.style.display = 'flex';
+            lockOverlay.scrollTop = 0;
+        }
         document.body.classList.add('cbt-exam-locked');
         updateBadge();
         playBeep();
         if (pinInput) {
             pinInput.value = '';
-            pinInput.focus();
+            // Only auto-focus on non-touch devices to avoid unexpected viewport jumping on HP
+            if (!('ontouchstart' in window) && window.innerWidth > 768) {
+                pinInput.focus();
+            }
         }
     }
 
@@ -407,7 +556,10 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
         var remaining = MAX_VIOLATIONS - count;
         if (warnTitle) warnTitle.textContent = 'PERINGATAN PELANGGARAN TAB (#' + count + ' / ' + MAX_VIOLATIONS + ')';
         if (warnRem) warnRem.textContent = 'Sisa toleransi: ' + remaining + ' kesempatan lagi! Pelanggaran ke-3 akan MENGUNCI ujian.';
-        if (warnModal) warnModal.style.display = 'flex';
+        if (warnModal) {
+            warnModal.style.display = 'flex';
+            warnModal.scrollTop = 0;
+        }
         updateBadge();
         playBeep();
     }
@@ -440,7 +592,8 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
     // Dismiss warning button
     var dismissBtn = document.getElementById('cbt-dismiss-warn-btn');
     if (dismissBtn) {
-        dismissBtn.addEventListener('click', function() {
+        dismissBtn.addEventListener('click', function(e) {
+            e.preventDefault();
             if (warnModal) warnModal.style.display = 'none';
             stopTitleAlert();
         });
@@ -449,7 +602,8 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
     // Admin direct dismiss button
     var adminDismissBtn = document.getElementById('cbt-admin-dismiss-btn');
     if (adminDismissBtn) {
-        adminDismissBtn.addEventListener('click', function() {
+        adminDismissBtn.addEventListener('click', function(e) {
+            e.preventDefault();
             if (warnModal) warnModal.style.display = 'none';
             stopTitleAlert();
             showToast('Peringatan diabaikan (Mode Penguji/Admin).');
@@ -459,7 +613,8 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
     // Admin instant unlock button
     var adminUnlockBtn = document.getElementById('cbt-admin-unlock-btn');
     if (adminUnlockBtn) {
-        adminUnlockBtn.addEventListener('click', function() {
+        adminUnlockBtn.addEventListener('click', function(e) {
+            e.preventDefault();
             unlockSuccess('Kunci dibuka via Mode Penguji/Admin.');
         });
     }
@@ -467,7 +622,10 @@ function local_cbt_kiosk_render_anticheat(string $quizpassword, bool $isPrivileg
     // Proctor unlock verification
     var unlockBtn = document.getElementById('cbt-unlock-btn');
     if (unlockBtn) {
-        unlockBtn.addEventListener('click', performUnlock);
+        unlockBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            performUnlock();
+        });
     }
     if (pinInput) {
         pinInput.addEventListener('keydown', function(e) {
