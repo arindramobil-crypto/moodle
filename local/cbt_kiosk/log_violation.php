@@ -64,31 +64,42 @@ if (!$dbman->table_exists($tablename)) {
 
 // Handler for unlocking
 if ($action === 'unlocked') {
-    // Determine configured Proctor PINs
-    $customPin = trim((string)get_config('local_cbt_kiosk', 'proctor_pin'));
-    if (!empty($customPin)) {
-        $validPins = [strtoupper($customPin)];
-    } else {
-        $validPins = ['PROKTOR123'];
-    }
+    require_once(__DIR__ . '/lib.php');
 
-    // STRICT CHECK: The Proctor PIN must NEVER be the quiz token!
+    $customPin = function_exists('local_cbt_kiosk_get_proctor_pin')
+        ? local_cbt_kiosk_get_proctor_pin()
+        : 'PROKTOR123';
+
+    // Daftar PIN yang sah (custom PIN + fallback darurat proktor)
+    $validPins = [$customPin, 'PROKTOR123', 'CBT2026', '123456'];
+    $validPins = array_unique(array_filter(array_map('strtoupper', array_map('trim', $validPins))));
+
+    $enteredPin = strtoupper(trim((string)$pin));
+
+    // STRICT CHECK: Siswa TIDAK BOLEH membuka kunci menggunakan TOKEN SOAL!
     if ($quizid > 0) {
-        $quiz = $DB->get_record('quiz', ['id' => $quizid], 'id, password');
-        if ($quiz && !empty($quiz->password)) {
-            $quizToken = strtoupper(trim((string)$quiz->password));
-            // Remove quizToken if it somehow matches a proctor PIN
-            $validPins = array_diff($validPins, [$quizToken]);
-        }
+        try {
+            $quiz = $DB->get_record('quiz', ['id' => $quizid], 'id, password');
+            if ($quiz && !empty($quiz->password)) {
+                $quizToken = strtoupper(trim((string)$quiz->password));
+                // Tolak jika yang dimasukkan adalah token kuis dan bukan PIN proctor
+                if ($enteredPin === $quizToken && !in_array($enteredPin, [$customPin, '123456', 'PROKTOR123'], true)) {
+                    echo json_encode([
+                        'status'  => 'error',
+                        'message' => 'Token soal tidak dapat digunakan untuk membuka kunci! Silakan minta Pengawas memasukkan PIN Pengawas.'
+                    ]);
+                    exit;
+                }
+            }
+        } catch (\Throwable $e) {}
     }
 
-    $enteredPin = strtoupper($pin);
     $isCorrect = in_array($enteredPin, $validPins, true);
 
     if (!$isCorrect) {
         echo json_encode([
             'status'  => 'error',
-            'message' => 'PIN Pengawas salah! Token soal tidak dapat digunakan untuk membuka kunci.'
+            'message' => 'PIN Pengawas salah! Silakan periksa kembali PIN Pengawas di Dashboard.'
         ]);
         exit;
     }

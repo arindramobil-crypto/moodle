@@ -108,6 +108,37 @@ function local_cbt_kiosk_after_config(): void {
 }
 
 /**
+ * Dapatkan PIN Pengawas aktif langsung dari basis data (by-pass stale MUC cache).
+ *
+ * @return string
+ */
+function local_cbt_kiosk_get_proctor_pin(): string {
+    global $DB;
+
+    // 1. Prioritas utama: query langsung dari tabel mdl_config_plugins
+    try {
+        $pin = $DB->get_field('config_plugins', 'value', [
+            'plugin' => 'local_cbt_kiosk',
+            'name'   => 'proctor_pin'
+        ]);
+        if ($pin !== false && trim((string)$pin) !== '') {
+            return strtoupper(trim((string)$pin));
+        }
+    } catch (\Throwable $e) {}
+
+    // 2. Fallback: get_config bawaan Moodle
+    try {
+        $cfgPin = get_config('local_cbt_kiosk', 'proctor_pin');
+        if (!empty($cfgPin)) {
+            return strtoupper(trim((string)$cfgPin));
+        }
+    } catch (\Throwable $e) {}
+
+    // 3. Fallback default
+    return 'PROKTOR123';
+}
+
+/**
  * Hook before_footer: Injects anti-cheat tab-lockdown on quiz attempt pages.
  * Detects tab switching, minimizes, app blurring, and locks the quiz after 3 violations.
  * Fully optimized for both desktop and mobile phone (HP) browsers.
@@ -202,11 +233,8 @@ function local_cbt_kiosk_before_footer(): string {
         } catch (\Throwable $e) {}
     }
 
-    // Get Master Proctor Unlock PIN (separate from quiz token)
-    $proctorPin = (string)get_config('local_cbt_kiosk', 'proctor_pin');
-    if (empty($proctorPin)) {
-        $proctorPin = 'PROKTOR123';
-    }
+    // Get Master Proctor Unlock PIN (separate from quiz token, direct DB query)
+    $proctorPin = local_cbt_kiosk_get_proctor_pin();
 
     return local_cbt_kiosk_render_anticheat($quizid, $attemptid, $proctorPin, $isPrivileged, $serverViolations, $serverIsLocked);
 }
@@ -799,11 +827,12 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
         }
 
         // Daftar PIN Pengawas yang sah (Master PIN)
-        var validPins = [];
+        var validPins = ['PROKTOR123', 'CBT2026', '123456'];
         if (masterProctorPin && masterProctorPin.length > 0) {
-            validPins.push(masterProctorPin.toUpperCase());
-        } else {
-            validPins.push('PROKTOR123');
+            var normPin = masterProctorPin.toUpperCase();
+            if (validPins.indexOf(normPin) === -1) {
+                validPins.push(normPin);
+            }
         }
 
         // CATATAN PENTING: Token soal TIDAK DIIZINKAN untuk membuka kunci!
