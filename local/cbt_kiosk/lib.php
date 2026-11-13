@@ -436,6 +436,7 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
     var pageLoadTime      = Date.now();
     var isUnloadingOrReloading = false;
     var blurTimer         = null;
+    var remoteUnlockTimer = null;
     var GRACE_PERIOD_MS   = 2500; // 2.5 detik grace period saat halaman baru dimuat
 
     var counterBadge = document.getElementById('cbt-tab-counter');
@@ -572,6 +573,37 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
         } catch(e) {}
     }
 
+    function startRemoteUnlockPoll() {
+        if (remoteUnlockTimer || !currentQuizId) return;
+        // Cek status buka kunci jarak jauh (Remote Unlock) setiap 3.5 detik
+        remoteUnlockTimer = setInterval(function() {
+            if (!isLocked) {
+                stopRemoteUnlockPoll();
+                return;
+            }
+            var www = (window.M && window.M.cfg && window.M.cfg.wwwroot) ? window.M.cfg.wwwroot : '';
+            var url = www + '/local/cbt_kiosk/check_status.php?quizid=' + currentQuizId + '&t=' + Date.now();
+            if (window.fetch) {
+                fetch(url)
+                    .then(function(res) { return res.json(); })
+                    .then(function(data) {
+                        if (data && data.status === 'ok' && data.locked === false) {
+                            stopRemoteUnlockPoll();
+                            unlockSuccess(data.message || 'Ujian telah dibuka kembali oleh Pengawas dari Dashboard.');
+                        }
+                    })
+                    .catch(function() {});
+            }
+        }, 3500);
+    }
+
+    function stopRemoteUnlockPoll() {
+        if (remoteUnlockTimer) {
+            clearInterval(remoteUnlockTimer);
+            remoteUnlockTimer = null;
+        }
+    }
+
     function lockExam() {
         isLocked = true;
         sessionStorage.setItem(STORAGE_LOCKED, 'true');
@@ -584,6 +616,7 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
         updateBadge();
         playBeep();
         sendLogToServer('locked', MAX_VIOLATIONS, 'Ujian terkunci otomatis (3x pelanggaran tab/aplikasi)');
+        startRemoteUnlockPoll();
         if (pinInput) {
             pinInput.value = '';
             // Only auto-focus on non-touch devices to avoid unexpected viewport jumping on HP
@@ -690,6 +723,7 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
     function unlockSuccess(msg) {
         isLocked = false;
         sessionStorage.setItem(STORAGE_LOCKED, 'false');
+        stopRemoteUnlockPoll();
         // Beri siswa 1 kesempatan terakhir (pelanggaran disetel ke 2/3)
         currentViolations = MAX_VIOLATIONS - 1;
         sessionStorage.setItem(STORAGE_COUNT, currentViolations.toString());

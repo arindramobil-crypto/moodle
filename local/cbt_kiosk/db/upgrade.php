@@ -37,3 +37,4 @@ function xmldb_local_cbt_kiosk_upgrade($oldversion) {
 
     return true;
 }
+

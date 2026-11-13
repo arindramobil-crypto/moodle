@@ -134,3 +134,4 @@ if (in_array($action, ['warning_1', 'warning_2', 'locked'])) {
 }
 
 echo json_encode(['status' => 'ignored']);
+
