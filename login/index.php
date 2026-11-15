@@ -136,6 +136,50 @@ if ($frm and isset($frm->username)) {                             // Login WITH 
 
     $frm->username = trim(core_text::strtolower($frm->username));
 
+    // CBT Kiosk: Fleksibilitas login via Username, Nomor Peserta, NIS, atau NISN
+    if (!$DB->record_exists('user', ['username' => $frm->username, 'mnethostid' => $CFG->mnet_localhost_id, 'deleted' => 0])) {
+        $inputClean = preg_replace('/[^a-zA-Z0-9._-]/', '', $frm->username);
+        
+        // 1. Coba cari dengan username tanpa karakter khusus (misal NIS tanpa slash: 70071829.4.2.1)
+        $matchedUser = $DB->get_record('user', ['username' => $inputClean, 'mnethostid' => $CFG->mnet_localhost_id, 'deleted' => 0]);
+
+        // 2. Coba cari berdasarkan idnumber di mdl_user
+        if (!$matchedUser) {
+            $matchedUser = $DB->get_record_select('user', "mnethostid = :mnet AND deleted = 0 AND (idnumber = :inp1 OR idnumber = :inp2)", [
+                'mnet' => $CFG->mnet_localhost_id,
+                'inp1' => $frm->username,
+                'inp2' => $inputClean,
+            ]);
+        }
+
+        // 3. Coba cari berdasarkan email prefix
+        if (!$matchedUser && !empty($inputClean)) {
+            $matchedUser = $DB->get_record_select('user', "mnethostid = :mnet AND deleted = 0 AND email LIKE :em", [
+                'mnet' => $CFG->mnet_localhost_id,
+                'em'   => $inputClean . '@%',
+            ]);
+        }
+
+        // 4. Coba cari di tabel participants (CBT Admin) jika berada di database yang sama
+        if (!$matchedUser) {
+            try {
+                $pRow = $DB->get_record_sql(
+                    "SELECT moodle_user_id FROM {participants} WHERE moodle_user_id IS NOT NULL AND (nomor_peserta = ? OR nis = ? OR nisn = ? OR REPLACE(nis, '/', '') = ?) LIMIT 1",
+                    [$frm->username, $frm->username, $frm->username, $inputClean]
+                );
+                if ($pRow && !empty($pRow->moodle_user_id)) {
+                    $matchedUser = $DB->get_record('user', ['id' => $pRow->moodle_user_id, 'deleted' => 0]);
+                }
+            } catch (\Throwable $ex) {
+                // ignore
+            }
+        }
+
+        if ($matchedUser) {
+            $frm->username = $matchedUser->username;
+        }
+    }
+
     if (is_enabled_auth('none') ) {
         if ($frm->username !== core_user::clean_field($frm->username, 'username')) {
             $errormsg = get_string('username').': '.get_string("invalidusername");
