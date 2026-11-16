@@ -283,11 +283,42 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
     -webkit-user-select: none !important;
 }
 
+/* ANTI-CHEAT & ANTI-AI: Cegah blok/seleksi teks, drag, dan pop-up context menu Android/iOS */
+body,
+#page,
+#page-content,
+#region-main,
+.que,
+.que .content,
+.que .qtext,
+.que .formulation,
+.que .ablock,
+.que .answer,
+.que .info {
+    -webkit-user-select: none !important;
+    -moz-user-select: none !important;
+    -ms-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important; /* Nonaktifkan popup menu long-press iOS & Android */
+}
+
+/* Izinkan input form & esai tetap bisa diketik normal */
+input, textarea, select, [contenteditable="true"] {
+    -webkit-user-select: auto !important;
+    -moz-user-select: auto !important;
+    user-select: auto !important;
+    -webkit-touch-callout: default !important;
+}
+
 /* CRITICAL MOBILE FIX: Force overlays, modals, and inputs to be fully interactive and clickable on phones */
 #cbt-lock-overlay,
 #cbt-lock-overlay *,
 #cbt-warning-modal,
 #cbt-warning-modal *,
+#cbt-fullscreen-modal,
+#cbt-fullscreen-modal *,
+#cbt-splitscreen-modal,
+#cbt-splitscreen-modal *,
 #cbt-status-badge,
 #cbt-status-badge * {
     pointer-events: auto !important;
@@ -406,6 +437,40 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
     <span style="color:#64748b;">|</span>
     <span id="cbt-tab-counter" style="color:#10b981;font-weight:700;">Pelanggaran Tab: 0/3</span>
     <span id="cbt-admin-tag" style="display:none;background:#3b82f6;color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">MODE PENGUJI</span>
+</div>
+
+<!-- Modal Wajib Layar Penuh (Fullscreen) di Awal Ujian -->
+<div id="cbt-fullscreen-modal" class="cbt-modal-overlay" style="z-index:2147483643;background:#0f172a;">
+    <div class="cbt-modal-card" style="border:2px solid #3b82f6;">
+        <div class="cbt-card-icon" style="width:72px;height:72px;border-radius:50%;background:rgba(59,130,246,0.15);border:2px solid #3b82f6;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:36px;animation:cbtPulseGlow 1.5s infinite;">
+            📱
+        </div>
+        <h3 class="cbt-card-title" style="color:#fff;font-size:20px;font-weight:800;margin:0 0 10px;">MODE LAYAR PENUH (FULLSCREEN)</h3>
+        <p class="cbt-card-desc" style="color:#cbd5e1;font-size:14px;line-height:1.6;margin:0 0 18px;">
+            Demi integritas ujian, lembar soal wajib dikerjakan dalam mode <strong>Layar Penuh</strong>.<br>
+            <span style="color:#f87171;font-weight:600;">Dilarang membagi layar (Split Screen), membuka jendela mengambang, atau berpindah aplikasi!</span>
+        </p>
+        <button type="button" id="cbt-enter-fullscreen-btn" style="width:100%;padding:15px;background:linear-gradient(135deg, #3b82f6, #1d4ed8);border:none;border-radius:12px;color:#fff;font-size:16px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(59,130,246,0.4);touch-action:manipulation;">
+            Mulai Ujian & Masuk Layar Penuh
+        </button>
+    </div>
+</div>
+
+<!-- Modal Penghalang Split Screen & Keluar Fullscreen -->
+<div id="cbt-splitscreen-modal" class="cbt-modal-overlay" style="z-index:2147483644;background:rgba(15,23,42,0.96);backdrop-filter:blur(8px);">
+    <div class="cbt-modal-card" style="animation:cbtShake 0.4s ease-in-out;">
+        <div class="cbt-card-icon" style="width:72px;height:72px;border-radius:50%;background:rgba(239,68,68,0.15);border:2px solid #ef4444;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:36px;animation:cbtPulseGlow 1.5s infinite;">
+            🚫
+        </div>
+        <h3 id="cbt-split-title" class="cbt-card-title" style="color:#ef4444;font-size:19px;font-weight:800;margin:0 0 10px;">DILARANG LAYAR BELAH (SPLIT SCREEN)!</h3>
+        <p id="cbt-split-desc" class="cbt-card-desc" style="color:#cbd5e1;font-size:13.5px;line-height:1.6;margin:0 0 18px;">
+            Sistem mendeteksi layar Anda berada dalam mode <strong>Split Screen</strong> atau Anda keluar dari Layar Penuh.<br>
+            Tutup aplikasi lain dan kembalikan ke 1 layar penuh untuk melanjutkan ujian.
+        </p>
+        <button type="button" id="cbt-recover-fullscreen-btn" style="width:100%;padding:14px;background:#ef4444;border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(239,68,68,0.4);touch-action:manipulation;">
+            Kembali ke Layar Penuh
+        </button>
+    </div>
 </div>
 
 <!-- Modal Peringatan Berpindah Tab (Pelanggaran 1 & 2) -->
@@ -530,12 +595,26 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
     var adminDismiss = document.getElementById('cbt-admin-dismiss-box');
     var adminUnlock  = document.getElementById('cbt-admin-unlock-box');
 
+    // Element Fullscreen & Anti-Split Screen
+    var fsModal      = document.getElementById('cbt-fullscreen-modal');
+    var splitModal   = document.getElementById('cbt-splitscreen-modal');
+    var enterFsBtn   = document.getElementById('cbt-enter-fullscreen-btn');
+    var recoverFsBtn = document.getElementById('cbt-recover-fullscreen-btn');
+    var splitTitle   = document.getElementById('cbt-split-title');
+    var splitDesc    = document.getElementById('cbt-split-desc');
+
     // CRITICAL FIX FOR MOBILE: Move modals directly under <body> so they escape #page pointer-events or blur
     if (lockOverlay && lockOverlay.parentElement !== document.body) {
         document.body.appendChild(lockOverlay);
     }
     if (warnModal && warnModal.parentElement !== document.body) {
         document.body.appendChild(warnModal);
+    }
+    if (fsModal && fsModal.parentElement !== document.body) {
+        document.body.appendChild(fsModal);
+    }
+    if (splitModal && splitModal.parentElement !== document.body) {
+        document.body.appendChild(splitModal);
     }
     var statusBadge = document.getElementById('cbt-status-badge');
     if (statusBadge && statusBadge.parentElement !== document.body) {
@@ -752,6 +831,117 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
         updateBadge();
     }
 
+    // ========================================================
+    // LOGIKA FULLSCREEN (LAYAR PENUH) & ANTI SPLIT-SCREEN
+    // ========================================================
+    function isFsSupported() {
+        return !!(document.fullscreenEnabled || document.webkitFullscreenEnabled || document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
+    }
+
+    function isFsActive() {
+        return !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+    }
+
+    function reqFullscreen() {
+        var el = document.documentElement;
+        var fn = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+        if (fn) {
+            try {
+                var p = fn.call(el);
+                if (p && p.catch) { p.catch(function() {}); }
+            } catch(e) {}
+        }
+    }
+
+    function isTypingActive() {
+        var el = document.activeElement;
+        if (!el) return false;
+        return (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+    }
+
+    function isSplitScreenActive() {
+        if (isTypingActive()) return false;
+        if (window.innerWidth <= 1024) {
+            var screenH = window.screen.availHeight || window.screen.height || 800;
+            // Jika tinggi viewport kurang dari 62% tinggi layar fisik tanpa ada input aktif -> Split Screen
+            if (screenH > 300 && (window.innerHeight / screenH) < 0.62) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    var fsSupported = isFsSupported();
+
+    // Tampilkan modal Masuk Layar Penuh di awal jika didukung dan belum fullscreen
+    if (fsSupported && !isFsActive() && !isLocked) {
+        if (fsModal) fsModal.style.display = 'flex';
+    }
+
+    if (enterFsBtn) {
+        enterFsBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            reqFullscreen();
+            if (fsModal) fsModal.style.display = 'none';
+        });
+    }
+
+    if (recoverFsBtn) {
+        recoverFsBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (isSplitScreenActive()) {
+                showToast('Tutup aplikasi lain dan matikan mode layar belah terlebih dahulu!');
+                return;
+            }
+            reqFullscreen();
+            if (splitModal) splitModal.style.display = 'none';
+        });
+    }
+
+    function checkScreenIntegrity(source) {
+        if (isUnloadingOrReloading || isLocked) return;
+        if (Date.now() - pageLoadTime < GRACE_PERIOD_MS) return;
+
+        // 1. Cek Layar Belah (Split Screen)
+        if (isSplitScreenActive()) {
+            if (splitTitle) splitTitle.textContent = 'DILARANG LAYAR BELAH (SPLIT SCREEN)!';
+            if (splitDesc) splitDesc.innerHTML = 'Sistem mendeteksi layar dalam mode <strong>Layar Belah (Split Screen)</strong>.<br>Harap tutup aplikasi lain dan kembalikan ke 1 layar penuh.';
+            if (splitModal) splitModal.style.display = 'flex';
+            triggerViolation('Mengaktifkan Layar Belah (Split Screen)');
+            return;
+        }
+
+        // 2. Cek Keluar dari Mode Layar Penuh (Fullscreen Exit)
+        if (fsSupported && !isFsActive()) {
+            if (splitTitle) splitTitle.textContent = 'KELUAR DARI LAYAR PENUH!';
+            if (splitDesc) splitDesc.innerHTML = 'Anda terdeteksi keluar dari mode <strong>Layar Penuh</strong>.<br>Klik tombol di bawah untuk kembali ke layar penuh.';
+            if (splitModal) splitModal.style.display = 'flex';
+            triggerViolation('Keluar dari mode Layar Penuh (Fullscreen)');
+            return;
+        }
+
+        // Jika kondisi layar sudah normal kembali, sembunyikan modal split
+        if (splitModal && !isLocked) {
+            splitModal.style.display = 'none';
+        }
+    }
+
+    var fsEvents = ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'];
+    fsEvents.forEach(function(ev) {
+        document.addEventListener(ev, function() {
+            checkScreenIntegrity('fullscreenchange');
+        });
+    });
+
+    window.addEventListener('resize', function() {
+        checkScreenIntegrity('resize');
+    });
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', function() {
+            checkScreenIntegrity('visualViewport');
+        });
+    }
+
     // Dismiss warning button
     var dismissBtn = document.getElementById('cbt-dismiss-warn-btn');
     if (dismissBtn) {
@@ -808,12 +998,16 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
         sessionStorage.setItem(STORAGE_COUNT, currentViolations.toString());
 
         if (lockOverlay) lockOverlay.style.display = 'none';
+        if (splitModal) splitModal.style.display = 'none';
         document.body.classList.remove('cbt-exam-locked');
         if (unlockErr) unlockErr.style.display = 'none';
         if (pinInput) pinInput.value = '';
         stopTitleAlert();
         updateBadge();
         showToast(msg || 'Ujian berhasil dibuka kembali oleh Pengawas. Harap fokus pada ujian!');
+        if (fsSupported && !isFsActive()) {
+            if (fsModal) fsModal.style.display = 'flex';
+        }
     }
 
     function performUnlock() {
@@ -925,8 +1119,8 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
         }
     });
 
-    // 2. Detect Window Blur (Aplikasi lain terbuka / Alt+Tab / Split Screen)
-    // Menggunakan delay 1.2s agar klik pada tombol reload atau address bar TIDAK dianggap pelanggaran
+    // 2. Detect Window Blur (Aplikasi lain terbuka / Alt+Tab / Floating Window / Sidebar)
+    // Menggunakan delay 350ms yang jauh lebih responsif menangkap floating window & sidebar
     window.addEventListener('blur', function() {
         if (isUnloadingOrReloading || isLocked) return;
         if (Date.now() - pageLoadTime < GRACE_PERIOD_MS) return;
@@ -940,9 +1134,9 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
         clearTimeout(blurTimer);
         blurTimer = setTimeout(function() {
             if (!isUnloadingOrReloading && !document.hasFocus() && !isLocked) {
-                triggerViolation('Fokus jendela ujian hilang (membuka aplikasi lain)');
+                triggerViolation('Fokus jendela ujian hilang (membuka aplikasi lain / floating window)');
             }
-        }, 1200);
+        }, 350);
     });
 
     window.addEventListener('focus', function() {
@@ -1011,6 +1205,22 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
             e.preventDefault();
             return false;
         }
+    });
+
+    // 6. Block SelectStart & DragStart (Anti-AI Copy, Highlight & Drag)
+    document.addEventListener('selectstart', function(e) {
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) {
+            return true;
+        }
+        e.preventDefault();
+        return false;
+    });
+    document.addEventListener('dragstart', function(e) {
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) {
+            return true;
+        }
+        e.preventDefault();
+        return false;
     });
 
 })();
