@@ -872,15 +872,19 @@ input, textarea, select, [contenteditable="true"] {
     }
 
     var fsSupported = isFsSupported();
+    var FS_SEEN_KEY = 'cbt_fs_intro_' + attemptKey;
+    var hasSeenFsModal = (sessionStorage.getItem(FS_SEEN_KEY) === '1');
 
-    // Tampilkan modal Masuk Layar Penuh di awal jika didukung dan belum fullscreen
-    if (fsSupported && !isFsActive() && !isLocked) {
+    // Tampilkan modal Masuk Layar Penuh HANYA SEKALI di awal ujian (soal pertama)
+    // Tidak akan muncul lagi saat siswa berpindah nomor soal!
+    if (fsSupported && !isFsActive() && !isLocked && !hasSeenFsModal) {
         if (fsModal) fsModal.style.display = 'flex';
     }
 
     if (enterFsBtn) {
         enterFsBtn.addEventListener('click', function(e) {
             e.preventDefault();
+            sessionStorage.setItem(FS_SEEN_KEY, '1');
             reqFullscreen();
             if (fsModal) fsModal.style.display = 'none';
         });
@@ -908,15 +912,6 @@ input, textarea, select, [contenteditable="true"] {
             if (splitDesc) splitDesc.innerHTML = 'Sistem mendeteksi layar dalam mode <strong>Layar Belah (Split Screen)</strong>.<br>Harap tutup aplikasi lain dan kembalikan ke 1 layar penuh.';
             if (splitModal) splitModal.style.display = 'flex';
             triggerViolation('Mengaktifkan Layar Belah (Split Screen)');
-            return;
-        }
-
-        // 2. Cek Keluar dari Mode Layar Penuh (Fullscreen Exit)
-        if (fsSupported && !isFsActive()) {
-            if (splitTitle) splitTitle.textContent = 'KELUAR DARI LAYAR PENUH!';
-            if (splitDesc) splitDesc.innerHTML = 'Anda terdeteksi keluar dari mode <strong>Layar Penuh</strong>.<br>Klik tombol di bawah untuk kembali ke layar penuh.';
-            if (splitModal) splitModal.style.display = 'flex';
-            triggerViolation('Keluar dari mode Layar Penuh (Fullscreen)');
             return;
         }
 
@@ -1100,6 +1095,24 @@ input, textarea, select, [contenteditable="true"] {
         clearTimeout(blurTimer);
     });
 
+    // Tangani klik pada tombol navigasi soal kuis Moodle (Next, Prev, No Soal, Selesai)
+    document.addEventListener('click', function(e) {
+        var target = e.target;
+        if (!target) return;
+        var navEl = (target.closest) ? target.closest('a, button, input[type="submit"], .qnbutton, .submitbtns, .mod_quiz-next-nav') : null;
+        if (navEl) {
+            var href = navEl.getAttribute('href') || '';
+            if (href.indexOf('mod/quiz') !== -1 || navEl.type === 'submit' || (navEl.classList && navEl.classList.contains('qnbutton'))) {
+                isUnloadingOrReloading = true;
+                clearTimeout(blurTimer);
+            }
+        }
+        // Auto re-enter fullscreen secara mulus saat siswa mengetuk layar / memilih jawaban jika browser sempat keluar fullscreen
+        if (fsSupported && !isFsActive() && !isLocked && !isSplitScreenActive()) {
+            reqFullscreen();
+        }
+    }, true);
+
     // 1. Detect Tab Visibility Change (Pindah Tab / Minimize Browser)
     document.addEventListener('visibilitychange', function() {
         if (isUnloadingOrReloading) return;
@@ -1120,7 +1133,7 @@ input, textarea, select, [contenteditable="true"] {
     });
 
     // 2. Detect Window Blur (Aplikasi lain terbuka / Alt+Tab / Floating Window / Sidebar)
-    // Menggunakan delay 350ms yang jauh lebih responsif menangkap floating window & sidebar
+    // Delay 700ms aman dari jeda klik navigasi tombol soal tapi tetap responsif menangkap floating app
     window.addEventListener('blur', function() {
         if (isUnloadingOrReloading || isLocked) return;
         if (Date.now() - pageLoadTime < GRACE_PERIOD_MS) return;
@@ -1136,7 +1149,7 @@ input, textarea, select, [contenteditable="true"] {
             if (!isUnloadingOrReloading && !document.hasFocus() && !isLocked) {
                 triggerViolation('Fokus jendela ujian hilang (membuka aplikasi lain / floating window)');
             }
-        }, 350);
+        }, 700);
     });
 
     window.addEventListener('focus', function() {
