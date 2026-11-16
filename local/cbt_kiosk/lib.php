@@ -439,6 +439,12 @@ input, textarea, select, [contenteditable="true"] {
     <span id="cbt-admin-tag" style="display:none;background:#3b82f6;color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">MODE PENGUJI</span>
 </div>
 
+<!-- Floating Action Pill jika Layar Penuh Terlepas saat Pindah Soal -->
+<div id="cbt-fs-floating-pill" style="position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483641;background:linear-gradient(135deg, #3b82f6, #1d4ed8);color:#fff;padding:8px 18px;border-radius:22px;font-size:12.5px;font-weight:700;box-shadow:0 4px 18px rgba(0,0,0,0.5);display:none;align-items:center;gap:8px;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;animation:cbtPulseGlow 1.5s infinite;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;letter-spacing:0.02em;">
+    <span style="font-size:15px;">⛶</span>
+    <span>Ketuk Layar untuk Layar Penuh</span>
+</div>
+
 <!-- Modal Wajib Layar Penuh (Fullscreen) di Awal Ujian -->
 <div id="cbt-fullscreen-modal" class="cbt-modal-overlay" style="z-index:2147483643;background:#0f172a;">
     <div class="cbt-modal-card" style="border:2px solid #3b82f6;">
@@ -598,6 +604,7 @@ input, textarea, select, [contenteditable="true"] {
     // Element Fullscreen & Anti-Split Screen
     var fsModal      = document.getElementById('cbt-fullscreen-modal');
     var splitModal   = document.getElementById('cbt-splitscreen-modal');
+    var fsPill       = document.getElementById('cbt-fs-floating-pill');
     var enterFsBtn   = document.getElementById('cbt-enter-fullscreen-btn');
     var recoverFsBtn = document.getElementById('cbt-recover-fullscreen-btn');
     var splitTitle   = document.getElementById('cbt-split-title');
@@ -615,6 +622,9 @@ input, textarea, select, [contenteditable="true"] {
     }
     if (splitModal && splitModal.parentElement !== document.body) {
         document.body.appendChild(splitModal);
+    }
+    if (fsPill && fsPill.parentElement !== document.body) {
+        document.body.appendChild(fsPill);
     }
     var statusBadge = document.getElementById('cbt-status-badge');
     if (statusBadge && statusBadge.parentElement !== document.body) {
@@ -875,10 +885,29 @@ input, textarea, select, [contenteditable="true"] {
     var FS_SEEN_KEY = 'cbt_fs_intro_' + attemptKey;
     var hasSeenFsModal = (sessionStorage.getItem(FS_SEEN_KEY) === '1');
 
+    function updateFsPill() {
+        if (!fsPill) return;
+        if (fsSupported && !isFsActive() && !isLocked && !isSplitScreenActive()) {
+            fsPill.style.display = 'flex';
+        } else {
+            fsPill.style.display = 'none';
+        }
+    }
+
+    if (fsPill) {
+        fsPill.addEventListener('click', function(e) {
+            e.preventDefault();
+            reqFullscreen();
+            fsPill.style.display = 'none';
+        });
+    }
+
     // Tampilkan modal Masuk Layar Penuh HANYA SEKALI di awal ujian (soal pertama)
     // Tidak akan muncul lagi saat siswa berpindah nomor soal!
     if (fsSupported && !isFsActive() && !isLocked && !hasSeenFsModal) {
         if (fsModal) fsModal.style.display = 'flex';
+    } else {
+        setTimeout(updateFsPill, 400);
     }
 
     if (enterFsBtn) {
@@ -919,6 +948,7 @@ input, textarea, select, [contenteditable="true"] {
         if (splitModal && !isLocked) {
             splitModal.style.display = 'none';
         }
+        updateFsPill();
     }
 
     var fsEvents = ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'];
@@ -1110,8 +1140,19 @@ input, textarea, select, [contenteditable="true"] {
         // Auto re-enter fullscreen secara mulus saat siswa mengetuk layar / memilih jawaban jika browser sempat keluar fullscreen
         if (fsSupported && !isFsActive() && !isLocked && !isSplitScreenActive()) {
             reqFullscreen();
+            if (fsPill) fsPill.style.display = 'none';
         }
     }, true);
+
+    // Auto re-enter fullscreen instan pada sentuhan pertama (touchstart / pointerdown) di HP
+    ['touchstart', 'pointerdown'].forEach(function(evType) {
+        document.addEventListener(evType, function(e) {
+            if (fsSupported && !isFsActive() && !isLocked && !isSplitScreenActive()) {
+                reqFullscreen();
+                if (fsPill) fsPill.style.display = 'none';
+            }
+        }, { passive: true });
+    });
 
     // 1. Detect Tab Visibility Change (Pindah Tab / Minimize Browser)
     document.addEventListener('visibilitychange', function() {
