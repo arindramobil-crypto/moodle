@@ -303,9 +303,12 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
     position: fixed;
     top: 0;
     left: 0;
-    width: 100vw;
-    height: 100vh;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: 100%;
     pointer-events: none !important;
+    -webkit-pointer-events: none !important;
     z-index: 9990;
     overflow: hidden;
     background-image: url('{$svgDataUri}');
