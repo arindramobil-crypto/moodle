@@ -265,13 +265,53 @@ function local_cbt_kiosk_before_footer(): string {
  * @return string
  */
 function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $proctorPin = 'PROKTOR123', bool $isPrivileged = false, int $serverViolations = 0, bool $serverIsLocked = false): string {
+    global $USER;
     $safeProctorPin = htmlspecialchars(strtoupper(trim($proctorPin)), ENT_QUOTES, 'UTF-8');
     $privilegedFlag = $isPrivileged ? 'true' : 'false';
     $serverLockedFlag = $serverIsLocked ? 'true' : 'false';
 
+    // Data Siswa & Jaringan untuk Watermark Anti-Foto & Anti-AI
+    $studentFullname = !empty($USER->id) ? fullname($USER) : 'Peserta Ujian';
+    $studentUsername = !empty($USER->username) ? $USER->username : '';
+    $studentIdNumber = !empty($USER->idnumber) ? $USER->idnumber : '';
+    $studentIdentifier = $studentIdNumber ? $studentUsername . ' / ' . $studentIdNumber : $studentUsername;
+    $clientIp = getremoteaddr();
+    $timestamp = date('d/m/Y H:i');
+
+    $wmLine1 = 'SMKN 1 KEMLAGI • ' . htmlspecialchars($studentFullname, ENT_QUOTES, 'UTF-8');
+    $wmLine2 = htmlspecialchars($studentIdentifier . ' • ' . $clientIp . ' • ' . $timestamp, ENT_QUOTES, 'UTF-8');
+
+    // Pola SVG Watermark (Ultra-ringan, tidak memberatkan GPU/CPU browser)
+    $svgRaw = '<svg xmlns="http://www.w3.org/2000/svg" width="340" height="180">' .
+        '<text x="20" y="80" fill="gray" fill-opacity="0.10" font-size="12" font-family="-apple-system,BlinkMacSystemFont,Roboto,sans-serif" font-weight="700" transform="rotate(-20 20 80)">' . $wmLine1 . '</text>' .
+        '<text x="20" y="150" fill="gray" fill-opacity="0.08" font-size="10.5" font-family="monospace" font-weight="600" transform="rotate(-20 20 150)">' . $wmLine2 . '</text>' .
+        '</svg>';
+    $svgDataUri = 'data:image/svg+xml;utf8,' . rawurlencode($svgRaw);
+
     return <<<HTML
 <!-- ===== CBT KIOSK ANTI-CHEAT LOCKDOWN SYSTEM ===== -->
 <style>
+/* ANTI-PHOTO & ANTI-AI WATERMARK: Cetak identitas siswa langsung di atas soal kuis Moodle */
+.que .content,
+.que .formulation {
+    position: relative !important;
+    background-image: url('{$svgDataUri}') !important;
+    background-repeat: repeat !important;
+}
+
+#cbt-screen-watermark {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none !important;
+    z-index: 9990;
+    overflow: hidden;
+    background-image: url('{$svgDataUri}');
+    background-repeat: repeat;
+}
+
 @keyframes cbtPulseGlow {
     0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
     50% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
@@ -438,6 +478,9 @@ input, textarea, select, [contenteditable="true"] {
 }
 </style>
 
+<!-- Watermark Identitas Siswa Anti-Foto & Anti-AI (Overlay) -->
+<div id="cbt-screen-watermark" aria-hidden="true"></div>
+
 <div id="cbt-toast-container"></div>
 
 <!-- Floating Status Badge -->
@@ -581,6 +624,24 @@ input, textarea, select, [contenteditable="true"] {
     var statusBadge = document.getElementById('cbt-status-badge');
     if (statusBadge && statusBadge.parentElement !== document.body) {
         document.body.appendChild(statusBadge);
+    }
+    var screenWatermark = document.getElementById('cbt-screen-watermark');
+    if (screenWatermark && screenWatermark.parentElement !== document.body) {
+        document.body.appendChild(screenWatermark);
+    }
+    // Anti-tamper watermark: pastikan tidak bisa di-remove via inspect element
+    if (window.MutationObserver && screenWatermark) {
+        var wmObserver = new MutationObserver(function() {
+            if (!document.getElementById('cbt-screen-watermark')) {
+                document.body.appendChild(screenWatermark);
+            }
+            screenWatermark.style.display = 'block';
+            screenWatermark.style.visibility = 'visible';
+            screenWatermark.style.opacity = '1';
+        });
+        try {
+            wmObserver.observe(document.body, { childList: true, subtree: true });
+        } catch (e) {}
     }
 
     if (isPrivileged) {
