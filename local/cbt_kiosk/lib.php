@@ -590,6 +590,14 @@ input, textarea, select, [contenteditable="true"] {
     var STORAGE_LOCKED  = 'cbt_locked_' + attemptKey;
 
     var localCount = parseInt(sessionStorage.getItem(STORAGE_COUNT) || '0', 10);
+
+    // Jika di database server status pelanggaran sudah direset/bersih (0), sinkronkan dan bersihkan sessionStorage lokal siswa
+    if (serverViolations === 0 && !serverIsLocked) {
+        sessionStorage.removeItem(STORAGE_COUNT);
+        sessionStorage.removeItem(STORAGE_LOCKED);
+        localCount = 0;
+    }
+
     var currentViolations = Math.max(localCount, serverViolations);
     var isLocked          = (sessionStorage.getItem(STORAGE_LOCKED) === 'true') || serverIsLocked || (currentViolations >= MAX_VIOLATIONS);
 
