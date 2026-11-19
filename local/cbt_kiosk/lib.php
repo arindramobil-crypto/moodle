@@ -281,10 +281,19 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
     $wmLine1 = 'SMKN 1 KEMLAGI • ' . htmlspecialchars($studentFullname, ENT_QUOTES, 'UTF-8');
     $wmLine2 = htmlspecialchars($studentIdentifier . ' • ' . $clientIp . ' • ' . $timestamp, ENT_QUOTES, 'UTF-8');
 
-    // Pola SVG Watermark (Ultra-ringan, tidak memberatkan GPU/CPU browser)
-    $svgRaw = '<svg xmlns="http://www.w3.org/2000/svg" width="340" height="180">' .
-        '<text x="20" y="80" fill="gray" fill-opacity="0.10" font-size="12" font-family="-apple-system,BlinkMacSystemFont,Roboto,sans-serif" font-weight="700" transform="rotate(-20 20 80)">' . $wmLine1 . '</text>' .
-        '<text x="20" y="150" fill="gray" fill-opacity="0.08" font-size="10.5" font-family="monospace" font-weight="600" transform="rotate(-20 20 150)">' . $wmLine2 . '</text>' .
+    // Pola SVG Anti-Kamera Moiré & Anti-AI Prompt Poisoning
+    // Menggunakan micro-grid garis bersilangan (sensor moiré interference)
+    // dan teks watermark tebal dengan kontras tinggi (AI OCR scrambler)
+    $svgRaw = '<svg xmlns="http://www.w3.org/2000/svg" width="380" height="220">' .
+        '<defs>' .
+          '<pattern id="moireGrid" width="6" height="6" patternUnits="userSpaceOnUse">' .
+            '<path d="M 0 0 L 6 6 M 6 0 L 0 6" fill="none" stroke="rgba(239,68,68,0.08)" stroke-width="0.8"/>' .
+          '</pattern>' .
+        '</defs>' .
+        '<rect width="100%" height="100%" fill="url(#moireGrid)"/>' .
+        '<text x="20" y="45" fill="#dc2626" fill-opacity="0.18" font-size="11.5" font-family="-apple-system,BlinkMacSystemFont,Roboto,sans-serif" font-weight="900" letter-spacing="1" transform="rotate(-20 20 45)">DOKUMEN RAHASIA • SMKN 1 KEMLAGI • DILARANG DIFOTO</text>' .
+        '<text x="20" y="110" fill="#dc2626" fill-opacity="0.22" font-size="14.5" font-family="-apple-system,BlinkMacSystemFont,Roboto,sans-serif" font-weight="900" transform="rotate(-20 20 110)">PESERTA: ' . $wmLine1 . '</text>' .
+        '<text x="20" y="175" fill="#0284c7" fill-opacity="0.20" font-size="12" font-family="monospace" font-weight="800" transform="rotate(-20 20 175)">NIS: ' . $wmLine2 . '</text>' .
         '</svg>';
     $svgDataUri = 'data:image/svg+xml;utf8,' . rawurlencode($svgRaw);
 
@@ -313,6 +322,26 @@ function local_cbt_kiosk_render_anticheat(int $quizid, int $attemptid, string $p
     overflow: hidden;
     background-image: url('{$svgDataUri}');
     background-repeat: repeat;
+}
+
+/* MODE PRIVASI ANTI-FOTO HP KEDUA (TOUCH-TO-REVEAL) */
+/* Soal kabur secara default. Saat disentuh/ditekan jari, teks menjadi jelas. Saat jari lepas, kembali kabur! */
+body.cbt-privacy-mode .que .qtext,
+body.cbt-privacy-mode .que .formulation,
+body.cbt-privacy-mode .que .ablock {
+    filter: blur(8.5px) !important;
+    transition: filter 0.18s ease-out;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+
+body.cbt-privacy-mode .que.cbt-revealed .qtext,
+body.cbt-privacy-mode .que.cbt-revealed .formulation,
+body.cbt-privacy-mode .que.cbt-revealed .ablock,
+body.cbt-privacy-mode .que:active .qtext,
+body.cbt-privacy-mode .que:active .formulation,
+body.cbt-privacy-mode .que:active .ablock {
+    filter: none !important;
 }
 
 @keyframes cbtPulseGlow {
@@ -492,6 +521,9 @@ input, textarea, select, [contenteditable="true"] {
     <span style="font-weight:600;">Anti-Cheat Aktif</span>
     <span style="color:#64748b;">|</span>
     <span id="cbt-tab-counter" style="color:#10b981;font-weight:700;">Pelanggaran Tab: 0/3</span>
+    <button type="button" id="cbt-privacy-toggle" onclick="window.cbtTogglePrivacy()" style="background:rgba(239,68,68,0.2);border:1px solid rgba(239,68,68,0.5);border-radius:12px;color:#f87171;font-size:11px;font-weight:700;padding:2px 8px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" title="Klik untuk mengaktifkan/menonaktifkan Mode Anti-Foto (Sentuh untuk Membaca)">
+        <span id="cbt-privacy-icon">🔒</span> <span id="cbt-privacy-label">Anti-Foto: ON</span>
+    </button>
     <span id="cbt-admin-tag" style="display:none;background:#3b82f6;color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">MODE PENGUJI</span>
 </div>
 
@@ -654,6 +686,68 @@ input, textarea, select, [contenteditable="true"] {
             wmObserver.observe(document.body, { childList: true, subtree: true });
         } catch (e) {}
     }
+
+    // ─── Mode Privasi Anti-Foto HP (Touch-to-Reveal) ───────────────────────────
+    var privacyEnabled = (sessionStorage.getItem('cbt_privacy_mode') !== 'false');
+
+    function updatePrivacyModeUI() {
+        var icon = document.getElementById('cbt-privacy-icon');
+        var label = document.getElementById('cbt-privacy-label');
+        var btn = document.getElementById('cbt-privacy-toggle');
+        if (privacyEnabled) {
+            document.body.classList.add('cbt-privacy-mode');
+            if (icon) icon.textContent = '🔒';
+            if (label) label.textContent = 'Anti-Foto: ON';
+            if (btn) {
+                btn.style.background = 'rgba(239,68,68,0.2)';
+                btn.style.borderColor = 'rgba(239,68,68,0.5)';
+                btn.style.color = '#f87171';
+            }
+        } else {
+            document.body.classList.remove('cbt-privacy-mode');
+            if (icon) icon.textContent = '👁️';
+            if (label) label.textContent = 'Anti-Foto: OFF';
+            if (btn) {
+                btn.style.background = 'rgba(100,116,139,0.2)';
+                btn.style.borderColor = 'rgba(100,116,139,0.4)';
+                btn.style.color = '#94a3b8';
+            }
+        }
+    }
+
+    window.cbtTogglePrivacy = function() {
+        privacyEnabled = !privacyEnabled;
+        sessionStorage.setItem('cbt_privacy_mode', privacyEnabled ? 'true' : 'false');
+        updatePrivacyModeUI();
+    };
+
+    updatePrivacyModeUI();
+
+    // Event listener touch/press untuk meng-unblur soal saat jari menempel
+    document.querySelectorAll('.que').forEach(function(queEl) {
+        var blurTimer = null;
+
+        function reveal() {
+            if (!privacyEnabled) return;
+            clearTimeout(blurTimer);
+            queEl.classList.add('cbt-revealed');
+        }
+
+        function conceal() {
+            if (!privacyEnabled) return;
+            blurTimer = setTimeout(function() {
+                queEl.classList.remove('cbt-revealed');
+            }, 1200);
+        }
+
+        queEl.addEventListener('touchstart', reveal, { passive: true });
+        queEl.addEventListener('touchmove', reveal, { passive: true });
+        queEl.addEventListener('touchend', conceal, { passive: true });
+        queEl.addEventListener('touchcancel', conceal, { passive: true });
+        queEl.addEventListener('mousedown', reveal);
+        queEl.addEventListener('mouseup', conceal);
+        queEl.addEventListener('mouseleave', conceal);
+    });
 
     if (isPrivileged) {
         if (adminTag) adminTag.style.display = 'inline-block';
