@@ -53,6 +53,35 @@ function local_cbt_kiosk_after_config(): void {
         $rel = str_replace('\\', '/', substr($script, strlen($moodle_root)));
     }
 
+    // Validasi Sisi Server: Cegah submit / finish attempt prematur sebelum waktu minimal tercapai
+    if (strpos($rel, '/mod/quiz/processattempt.php') !== false) {
+        $finishattempt = !empty($_POST['finishattempt']) || !empty($_GET['finishattempt']);
+        $timeup = !empty($_POST['timeup']) || !empty($_GET['timeup']);
+        if ($finishattempt && !$timeup) {
+            $attemptid = (int)($_POST['attempt'] ?? $_GET['attempt'] ?? 0);
+            if ($attemptid > 0) {
+                $minMinutes = local_cbt_kiosk_get_min_finish_minutes();
+                if ($minMinutes > 0) {
+                    try {
+                        $attempt = $DB->get_record('quiz_attempts', ['id' => $attemptid], 'id,timestart,preview,userid');
+                        if ($attempt && empty($attempt->preview)) {
+                            $elapsed = time() - (int)$attempt->timestart;
+                            $minSeconds = $minMinutes * 60;
+                            if ($elapsed < $minSeconds) {
+                                $remaining = $minSeconds - $elapsed;
+                                $remMinutes = ceil($remaining / 60);
+                                \core\notification::warning("Anda belum dapat menyelesaikan ujian. Ketentuan waktu minimal pengerjaan adalah {$minMinutes} menit (Sisa waktu sekitar {$remMinutes} menit).");
+                                $summaryUrl = new \moodle_url('/mod/quiz/summary.php', ['attempt' => $attemptid]);
+                                redirect($summaryUrl);
+                                exit;
+                            }
+                        }
+                    } catch (\Throwable $e) {}
+                }
+            }
+        }
+    }
+
     foreach ($always_allowed_patterns as $pattern) {
         if (strpos($rel, $pattern) !== false) {
             return; // Allow
@@ -136,6 +165,36 @@ function local_cbt_kiosk_get_proctor_pin(): string {
 
     // 3. Fallback default
     return 'PROKTOR123';
+}
+
+/**
+ * Dapatkan batas waktu minimal pengerjaan (dalam menit) sebelum siswa boleh menyelesaikan ujian.
+ *
+ * @return int
+ */
+function local_cbt_kiosk_get_min_finish_minutes(): int {
+    global $DB;
+
+    // 1. Prioritas utama: query langsung dari tabel mdl_config_plugins
+    try {
+        $val = $DB->get_field('config_plugins', 'value', [
+            'plugin' => 'local_cbt_kiosk',
+            'name'   => 'min_finish_minutes'
+        ]);
+        if ($val !== false && is_numeric($val)) {
+            return max(0, (int)$val);
+        }
+    } catch (\Throwable $e) {}
+
+    // 2. Fallback: get_config bawaan Moodle
+    try {
+        $cfgVal = get_config('local_cbt_kiosk', 'min_finish_minutes');
+        if ($cfgVal !== false && is_numeric($cfgVal)) {
+            return max(0, (int)$cfgVal);
+        }
+    } catch (\Throwable $e) {}
+
+    return 0;
 }
 
 /**
@@ -250,7 +309,340 @@ function local_cbt_kiosk_before_footer(): string {
     // Get Master Proctor Unlock PIN (separate from quiz token, direct DB query)
     $proctorPin = local_cbt_kiosk_get_proctor_pin();
 
-    return local_cbt_kiosk_render_anticheat($quizid, $attemptid, $proctorPin, $isPrivileged, $serverViolations, $serverIsLocked);
+    $output = local_cbt_kiosk_render_anticheat($quizid, $attemptid, $proctorPin, $isPrivileged, $serverViolations, $serverIsLocked);
+
+    // Kunci Waktu Minimal Pengerjaan (Khusus siswa sesungguhnya, bukan pratinjau guru/admin)
+    if (!$isPrivileged && $attemptid > 0) {
+        $minFinishMinutes = local_cbt_kiosk_get_min_finish_minutes();
+        if ($minFinishMinutes > 0) {
+            $remainingSeconds = 0;
+            try {
+                $timestart = (int)$DB->get_field('quiz_attempts', 'timestart', ['id' => $attemptid]);
+                if ($timestart > 0) {
+                    $targetTime = $timestart + ($minFinishMinutes * 60);
+                    $remainingSeconds = max(0, $targetTime - time());
+                }
+            } catch (\Throwable $e) {}
+
+            $output .= local_cbt_kiosk_render_min_finish_lock($minFinishMinutes, $remainingSeconds);
+        }
+    }
+
+    return $output;
+}
+
+/**
+ * Render kunci ketentuan waktu minimal pengerjaan (hitung mundur & blokir tombol kumpulkan kuis).
+ *
+ * @param int $minMinutes Batas waktu minimal dalam menit
+ * @param int $remainingSeconds Sisa detik sebelum tombol selesai diizinkan
+ * @return string
+ */
+function local_cbt_kiosk_render_min_finish_lock(int $minMinutes, int $remainingSeconds): string {
+    if ($minMinutes <= 0) {
+        return '';
+    }
+
+    $minMinutesSafe = (int)$minMinutes;
+    $remainingSecondsSafe = max(0, (int)$remainingSeconds);
+
+    return <<<HTML
+<!-- ===== CBT KIOSK MINIMUM FINISH TIME LOCK ===== -->
+<style>
+@keyframes cbtPulseGreen {
+    0% {
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+        transform: scale(1);
+    }
+    50% {
+        box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+        transform: scale(1.02);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+        transform: scale(1);
+    }
+}
+.cbt-finish-locked {
+    pointer-events: none !important;
+    opacity: 0.45 !important;
+    filter: grayscale(0.85) !important;
+    cursor: not-allowed !important;
+    user-select: none !important;
+}
+.cbt-finish-unlocked {
+    animation: cbtPulseGreen 2s infinite !important;
+    border-color: #10b981 !important;
+}
+</style>
+<script>
+(function() {
+    'use strict';
+    var minMinutes = {$minMinutesSafe};
+    var remainingSeconds = {$remainingSecondsSafe};
+
+    function formatTime(sec) {
+        if (sec <= 0) return '00:00';
+        var m = Math.floor(sec / 60);
+        var s = sec % 60;
+        var h = Math.floor(m / 60);
+        if (h > 0) {
+            m = m % 60;
+            return (h < 10 ? '0' + h : h) + ':' + (m < 10 ? '0' + m : m) + ':' + (s < 10 ? '0' + s : s);
+        }
+        return (m < 10 ? '0' + m : m) + ':' + (s < 10 ? '0' + s : s);
+    }
+
+    function getFinishButtons() {
+        var buttons = [];
+        var finishForm = document.getElementById('frm-finishattempt');
+        if (finishForm) {
+            var fBtns = finishForm.querySelectorAll('button, input[type="submit"]');
+            for (var i = 0; i < fBtns.length; i++) {
+                buttons.push(fBtns[i]);
+            }
+        }
+        var classBtns = document.querySelectorAll('.btn-finishattempt');
+        for (var j = 0; j < classBtns.length; j++) {
+            if (buttons.indexOf(classBtns[j]) === -1) {
+                buttons.push(classBtns[j]);
+            }
+        }
+        var namedBtns = document.querySelectorAll('button[name="finishattempt"], input[name="finishattempt"]');
+        for (var k = 0; k < namedBtns.length; k++) {
+            if (buttons.indexOf(namedBtns[k]) === -1) {
+                buttons.push(namedBtns[k]);
+            }
+        }
+        var submitBtns = document.querySelectorAll('.submitbtns input[type="submit"], .submitbtns button');
+        for (var l = 0; l < submitBtns.length; l++) {
+            var val = (submitBtns[l].value || submitBtns[l].textContent || '').toLowerCase();
+            if (val.indexOf('return') === -1 && val.indexOf('kembali') === -1) {
+                if (buttons.indexOf(submitBtns[l]) === -1) {
+                    buttons.push(submitBtns[l]);
+                }
+            }
+        }
+        return buttons;
+    }
+
+    function updateLockUI() {
+        var finishBtns = getFinishButtons();
+        var timerDisplay = document.getElementById('cbt-finish-timer-display');
+        var banner = document.getElementById('cbt-min-finish-banner');
+
+        if (remainingSeconds > 0) {
+            // TERKUNCI
+            for (var i = 0; i < finishBtns.length; i++) {
+                var btn = finishBtns[i];
+                btn.disabled = true;
+                btn.classList.add('cbt-finish-locked', 'disabled');
+                btn.setAttribute('aria-disabled', 'true');
+                btn.setAttribute('title', 'Waktu minimal pengerjaan belum tercapai (Sisa: ' + formatTime(remainingSeconds) + ')');
+            }
+
+            if (timerDisplay) {
+                timerDisplay.textContent = formatTime(remainingSeconds);
+            }
+
+            // Lock modal button if modal is open
+            var modalSaveBtn = document.querySelector('[data-region="modal"] [data-action="save"]');
+            if (modalSaveBtn) {
+                modalSaveBtn.disabled = true;
+                modalSaveBtn.classList.add('cbt-finish-locked', 'disabled');
+            }
+        } else {
+            // TERBUKA (WAKTU MINIMAL TERCAPAI)
+            for (var j = 0; j < finishBtns.length; j++) {
+                var uBtn = finishBtns[j];
+                uBtn.disabled = false;
+                uBtn.classList.remove('cbt-finish-locked', 'disabled');
+                uBtn.removeAttribute('aria-disabled');
+                uBtn.removeAttribute('title');
+                uBtn.classList.add('cbt-finish-unlocked');
+            }
+
+            if (banner) {
+                banner.className = 'alert alert-success';
+                banner.style.border = '2px solid #10b981';
+                banner.style.background = '#ecfdf5';
+                banner.style.color = '#065f46';
+                banner.style.boxShadow = '0 4px 12px rgba(16,185,129,0.15)';
+                banner.innerHTML = '<div style="display:flex;align-items:center;gap:12px">' +
+                    '<span style="font-size:26px;line-height:1">✅</span>' +
+                    '<div style="flex:1">' +
+                        '<div style="font-weight:700;font-size:15px;color:#065f46;margin-bottom:2px">' +
+                            'Waktu Minimal Pengerjaan Telah Tercapai!' +
+                        '</div>' +
+                        '<div style="font-size:13px;color:#047857">' +
+                            'Anda sekarang sudah diperbolehkan menekan tombol <strong>Kumpulkan semua dan selesai</strong> di bawah.' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            }
+
+            var modalSaveBtnOpen = document.querySelector('[data-region="modal"] [data-action="save"]');
+            if (modalSaveBtnOpen) {
+                modalSaveBtnOpen.disabled = false;
+                modalSaveBtnOpen.classList.remove('cbt-finish-locked', 'disabled');
+            }
+
+            var attemptBadge = document.getElementById('cbt-attempt-min-badge');
+            if (attemptBadge) {
+                attemptBadge.style.background = '#d1fae5';
+                attemptBadge.style.border = '1px solid #a7f3d0';
+                attemptBadge.style.color = '#065f46';
+                attemptBadge.innerHTML = '✅ Siap Selesai';
+            }
+        }
+    }
+
+    function initSummaryBanner() {
+        var finishBtns = getFinishButtons();
+        var finishForm = document.getElementById('frm-finishattempt');
+        var isSummaryUrl = (window.location.href.indexOf('summary.php') !== -1);
+
+        if (!finishForm && finishBtns.length === 0 && !isSummaryUrl) {
+            return;
+        }
+
+        if (!document.getElementById('cbt-min-finish-banner')) {
+            var banner = document.createElement('div');
+            banner.id = 'cbt-min-finish-banner';
+            banner.className = (remainingSeconds > 0) ? 'alert alert-warning' : 'alert alert-success';
+            banner.style.cssText = 'max-width:650px;margin:24px auto 16px auto;padding:16px 20px;border-radius:10px;text-align:left;';
+
+            if (remainingSeconds > 0) {
+                banner.style.border = '2px solid #f59e0b';
+                banner.style.background = '#fffbeb';
+                banner.style.color = '#92400e';
+                banner.style.boxShadow = '0 4px 14px rgba(245,158,11,0.18)';
+                banner.innerHTML = '<div style="display:flex;align-items:flex-start;gap:14px">' +
+                    '<span style="font-size:28px;line-height:1">⏳</span>' +
+                    '<div style="flex:1">' +
+                        '<div style="font-weight:700;font-size:15px;color:#92400e;margin-bottom:4px">' +
+                            'Ketentuan Waktu Minimal: ' + minMinutes + ' Menit' +
+                        '</div>' +
+                        '<div style="font-size:13px;color:#78350f;line-height:1.45">' +
+                            'Sesuai tata tertib ujian, peserta <strong>belum dapat mengumpulkan ujian</strong> sebelum waktu pengerjaan mencapai minimal <strong>' + minMinutes + ' menit</strong>.' +
+                        '</div>' +
+                        '<div id="cbt-timer-row" style="margin-top:12px;display:inline-flex;align-items:center;gap:10px;background:#fef3c7;border:1px solid #fde68a;padding:8px 14px;border-radius:8px">' +
+                            '<span style="font-size:13px;font-weight:600;color:#92400e">Tombol Selesai dapat ditekan dalam:</span>' +
+                            '<strong id="cbt-finish-timer-display" style="font-family:\'Courier New\', monospace;font-size:22px;color:#b45309;letter-spacing:1px">' + formatTime(remainingSeconds) + '</strong>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            } else {
+                banner.style.border = '2px solid #10b981';
+                banner.style.background = '#ecfdf5';
+                banner.style.color = '#065f46';
+                banner.style.boxShadow = '0 4px 12px rgba(16,185,129,0.15)';
+                banner.innerHTML = '<div style="display:flex;align-items:center;gap:12px">' +
+                    '<span style="font-size:26px;line-height:1">✅</span>' +
+                    '<div style="flex:1">' +
+                        '<div style="font-weight:700;font-size:15px;color:#065f46;margin-bottom:2px">' +
+                            'Waktu Minimal Pengerjaan Telah Tercapai (' + minMinutes + ' Menit)' +
+                        '</div>' +
+                        '<div style="font-size:13px;color:#047857">' +
+                            'Anda sekarang sudah diperbolehkan menekan tombol <strong>Kumpulkan semua dan selesai</strong> di bawah.' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            }
+
+            if (finishForm && finishForm.parentNode) {
+                finishForm.parentNode.insertBefore(banner, finishForm);
+            } else {
+                var submitBtnsEl = document.querySelector('.submitbtns');
+                if (submitBtnsEl && submitBtnsEl.parentNode) {
+                    submitBtnsEl.parentNode.insertBefore(banner, submitBtnsEl);
+                } else {
+                    var mainContent = document.getElementById('region-main') || document.querySelector('[role="main"]') || document.body;
+                    mainContent.appendChild(banner);
+                }
+            }
+        }
+
+        // Intercept form submit event
+        if (finishForm && !finishForm._cbtLockAttached) {
+            finishForm._cbtLockAttached = true;
+            finishForm.addEventListener('submit', function(e) {
+                if (remainingSeconds > 0) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    alert('Anda belum dapat menyelesaikan ujian!\n\nKetentuan waktu minimal pengerjaan: ' + minMinutes + ' menit.\nSisa waktu: ' + formatTime(remainingSeconds));
+                    return false;
+                }
+            }, true);
+        }
+
+        updateLockUI();
+    }
+
+    function initAttemptBadge() {
+        var endTestLinks = document.querySelectorAll('.endtestlink a, a.endtestlink, a[href*="summary.php"]');
+        if (endTestLinks.length > 0 && !document.getElementById('cbt-attempt-min-badge')) {
+            var target = endTestLinks[0];
+            var badge = document.createElement('span');
+            badge.id = 'cbt-attempt-min-badge';
+            badge.style.cssText = 'display:inline-block;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-left:6px;transition:all 0.3s;vertical-align:middle;';
+
+            if (remainingSeconds > 0) {
+                badge.style.background = '#fef3c7';
+                badge.style.border = '1px solid #fde68a';
+                badge.style.color = '#92400e';
+                badge.innerHTML = '⏳ <span id="cbt-attempt-timer">' + formatTime(remainingSeconds) + '</span>';
+            } else {
+                badge.style.background = '#d1fae5';
+                badge.style.border = '1px solid #a7f3d0';
+                badge.style.color = '#065f46';
+                badge.innerHTML = '✅ Siap Selesai';
+            }
+            target.appendChild(badge);
+        }
+    }
+
+    function startTimer() {
+        initSummaryBanner();
+        initAttemptBadge();
+
+        if (remainingSeconds > 0) {
+            var timerInterval = setInterval(function() {
+                remainingSeconds--;
+                updateLockUI();
+
+                var attemptTimer = document.getElementById('cbt-attempt-timer');
+                if (attemptTimer) {
+                    if (remainingSeconds > 0) {
+                        attemptTimer.textContent = formatTime(remainingSeconds);
+                    } else {
+                        var badge = document.getElementById('cbt-attempt-min-badge');
+                        if (badge) {
+                            badge.style.background = '#d1fae5';
+                            badge.style.border = '1px solid #a7f3d0';
+                            badge.style.color = '#065f46';
+                            badge.innerHTML = '✅ Siap Selesai';
+                        }
+                    }
+                }
+
+                if (remainingSeconds <= 0) {
+                    clearInterval(timerInterval);
+                    updateLockUI();
+                }
+            }, 1000);
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startTimer);
+    } else {
+        startTimer();
+    }
+})();
+</script>
+<!-- ===== END CBT KIOSK MINIMUM FINISH TIME LOCK ===== -->
+HTML;
 }
 
 /**

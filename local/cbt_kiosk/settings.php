@@ -20,6 +20,14 @@ if ($hassiteconfig) {
         PARAM_TEXT
     ));
 
+    $settings->add(new admin_setting_configtext(
+        'local_cbt_kiosk/min_finish_minutes',
+        get_string('min_finish_minutes', 'local_cbt_kiosk'),
+        get_string('min_finish_minutes_desc', 'local_cbt_kiosk'),
+        '0',
+        PARAM_INT
+    ));
+
     $ADMIN->add('localplugins', $settings);
 }
 
