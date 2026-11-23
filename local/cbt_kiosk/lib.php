@@ -53,37 +53,59 @@ function local_cbt_kiosk_after_config(): void {
         $rel = str_replace('\\', '/', substr($script, strlen($moodle_root)));
     }
 
-    // Validasi Sisi Server: Cegah submit / finish attempt prematur sebelum waktu minimal tercapai
-    if (strpos($rel, '/mod/quiz/processattempt.php') !== false) {
-        $finishattempt = !empty($_POST['finishattempt']) || !empty($_GET['finishattempt']);
-        $timeup = !empty($_POST['timeup']) || !empty($_GET['timeup']);
-        if ($finishattempt && !$timeup) {
-            $attemptid = (int)($_POST['attempt'] ?? $_GET['attempt'] ?? 0);
-            if ($attemptid > 0) {
-                $minMinutes = local_cbt_kiosk_get_min_finish_minutes();
-                if ($minMinutes > 0) {
-                    try {
-                        $attempt = $DB->get_record('quiz_attempts', ['id' => $attemptid], 'id,timestart,preview,userid');
-                        if ($attempt && empty($attempt->preview)) {
-                            $elapsed = time() - (int)$attempt->timestart;
-                            $minSeconds = $minMinutes * 60;
-                            if ($elapsed < $minSeconds) {
-                                $remaining = $minSeconds - $elapsed;
-                                $remMinutes = ceil($remaining / 60);
-                                \core\notification::warning("Anda belum dapat menyelesaikan ujian. Ketentuan waktu minimal pengerjaan adalah {$minMinutes} menit (Sisa waktu sekitar {$remMinutes} menit).");
-                                $summaryUrl = new \moodle_url('/mod/quiz/summary.php', ['attempt' => $attemptid]);
-                                redirect($summaryUrl);
-                                exit;
-                            }
-                        }
-                    } catch (\Throwable $e) {}
-                }
-            }
-        }
-    }
-
     foreach ($always_allowed_patterns as $pattern) {
         if (strpos($rel, $pattern) !== false) {
+
+            // ★ FIX BUG 1: Blok waktu minimal HANYA untuk siswa biasa (bukan guru/admin)
+            // Harus ada di sini karena /mod/quiz/ masuk always_allowed, jadi kita cek khusus processattempt
+            if (strpos($rel, '/mod/quiz/processattempt.php') !== false) {
+                $finishattempt = !empty($_POST['finishattempt']) || !empty($_GET['finishattempt']);
+                $timeup = !empty($_POST['timeup']) || !empty($_GET['timeup']);
+                if ($finishattempt && !$timeup) {
+                    $attemptid = (int)($_POST['attempt'] ?? $_GET['attempt'] ?? 0);
+                    if ($attemptid > 0) {
+                        // Cek privilege dulu - jangan blok guru/admin
+                        $isTeacher = false;
+                        try {
+                            if (function_exists('is_siteadmin') && !empty($USER->id) && is_siteadmin($USER->id)) {
+                                $isTeacher = true;
+                            } else {
+                                $isTeacher = !empty($USER->id) && $DB->record_exists_sql(
+                                    "SELECT ra.id FROM {role_assignments} ra WHERE ra.userid = :uid AND ra.roleid IN (1, 2, 3, 4)",
+                                    ['uid' => $USER->id]
+                                );
+                            }
+                        } catch (\Throwable $e) {}
+
+                        if (!$isTeacher) {
+                            $minMinutes = local_cbt_kiosk_get_min_finish_minutes();
+                            if ($minMinutes > 0) {
+                                try {
+                                    $attempt = $DB->get_record('quiz_attempts', ['id' => $attemptid], 'id,timestart,preview,userid');
+                                    // Hanya blok jika attempt milik user ini dan bukan preview
+                                    if ($attempt && empty($attempt->preview) && (int)$attempt->userid === (int)$USER->id) {
+                                        $elapsed = time() - (int)$attempt->timestart;
+                                        $minSeconds = $minMinutes * 60;
+                                        if ($elapsed < $minSeconds) {
+                                            $remaining = $minSeconds - $elapsed;
+                                            $remMinutes = (int)ceil($remaining / 60);
+                                            // Simpan pesan ke session agar tampil di summary page
+                                            $_SESSION['cbt_min_finish_warning'] = "Anda belum dapat menyelesaikan ujian! Ketentuan waktu minimal pengerjaan adalah {$minMinutes} menit. Sisa waktu sekitar {$remMinutes} menit lagi.";
+                                            $summaryUrl = new \moodle_url('/mod/quiz/summary.php', [
+                                                'attempt'   => $attemptid,
+                                                'cbt_early' => 1,
+                                            ]);
+                                            redirect($summaryUrl);
+                                            exit;
+                                        }
+                                    }
+                                } catch (\Throwable $e) {}
+                            }
+                        }
+                    }
+                }
+            }
+
             return; // Allow
         }
     }
@@ -395,34 +417,48 @@ function local_cbt_kiosk_render_min_finish_lock(int $minMinutes, int $remainingS
 
     function getFinishButtons() {
         var buttons = [];
+
+        // ★ FIX BUG 2: Moodle merender single_button sebagai:
+        //   <div class="btn-finishattempt"><form id="frm-finishattempt"><button id="responseform" ...></form></div>
+        // Jadi kita cari button di dalam form#frm-finishattempt, dan button di dalam .btn-finishattempt
+
+        // 1. Cari button di dalam form#frm-finishattempt (paling akurat)
         var finishForm = document.getElementById('frm-finishattempt');
         if (finishForm) {
-            var fBtns = finishForm.querySelectorAll('button, input[type="submit"]');
+            var fBtns = finishForm.querySelectorAll('button[type="submit"], input[type="submit"]');
             for (var i = 0; i < fBtns.length; i++) {
                 buttons.push(fBtns[i]);
             }
         }
-        var classBtns = document.querySelectorAll('.btn-finishattempt');
-        for (var j = 0; j < classBtns.length; j++) {
-            if (buttons.indexOf(classBtns[j]) === -1) {
-                buttons.push(classBtns[j]);
+
+        // 2. Cari button di dalam div.btn-finishattempt (Moodle single_button wrapper)
+        var wrappers = document.querySelectorAll('.btn-finishattempt');
+        for (var j = 0; j < wrappers.length; j++) {
+            var innerBtns = wrappers[j].querySelectorAll('button[type="submit"], input[type="submit"]');
+            for (var k = 0; k < innerBtns.length; k++) {
+                if (buttons.indexOf(innerBtns[k]) === -1) {
+                    buttons.push(innerBtns[k]);
+                }
             }
         }
-        var namedBtns = document.querySelectorAll('button[name="finishattempt"], input[name="finishattempt"]');
-        for (var k = 0; k < namedBtns.length; k++) {
-            if (buttons.indexOf(namedBtns[k]) === -1) {
-                buttons.push(namedBtns[k]);
-            }
+
+        // 3. Button langsung dengan id="responseform" (Moodle quiz finish button)
+        var respBtn = document.getElementById('responseform');
+        if (respBtn && (respBtn.tagName === 'BUTTON' || respBtn.tagName === 'INPUT') && buttons.indexOf(respBtn) === -1) {
+            buttons.push(respBtn);
         }
-        var submitBtns = document.querySelectorAll('.submitbtns input[type="submit"], .submitbtns button');
+
+        // 4. .submitbtns area — semua submit button kecuali "Kembali"
+        var submitBtns = document.querySelectorAll('.submitbtns input[type="submit"], .submitbtns button[type="submit"]');
         for (var l = 0; l < submitBtns.length; l++) {
-            var val = (submitBtns[l].value || submitBtns[l].textContent || '').toLowerCase();
-            if (val.indexOf('return') === -1 && val.indexOf('kembali') === -1) {
+            var val = (submitBtns[l].value || submitBtns[l].textContent || '').toLowerCase().trim();
+            if (val.indexOf('return') === -1 && val.indexOf('kembali') === -1 && val !== '') {
                 if (buttons.indexOf(submitBtns[l]) === -1) {
                     buttons.push(submitBtns[l]);
                 }
             }
         }
+
         return buttons;
     }
 
@@ -439,6 +475,17 @@ function local_cbt_kiosk_render_min_finish_lock(int $minMinutes, int $remainingS
                 btn.classList.add('cbt-finish-locked', 'disabled');
                 btn.setAttribute('aria-disabled', 'true');
                 btn.setAttribute('title', 'Waktu minimal pengerjaan belum tercapai (Sisa: ' + formatTime(remainingSeconds) + ')');
+                if (!btn._cbtClickAttached) {
+                    btn._cbtClickAttached = true;
+                    btn.addEventListener('click', function(e) {
+                        if (remainingSeconds > 0) {
+                            e.preventDefault();
+                            e.stopImmediatePropagation();
+                            alert('Anda belum dapat menyelesaikan ujian!\n\nKetentuan waktu minimal pengerjaan adalah ' + minMinutes + ' menit.\nSisa waktu: ' + formatTime(remainingSeconds));
+                            return false;
+                        }
+                    }, true);
+                }
             }
 
             if (timerDisplay) {
@@ -563,17 +610,56 @@ function local_cbt_kiosk_render_min_finish_lock(int $minMinutes, int $remainingS
             }
         }
 
-        // Intercept form submit event
+        // Intercept form submit event (standar)
         if (finishForm && !finishForm._cbtLockAttached) {
             finishForm._cbtLockAttached = true;
             finishForm.addEventListener('submit', function(e) {
                 if (remainingSeconds > 0) {
                     e.preventDefault();
                     e.stopPropagation();
-                    alert('Anda belum dapat menyelesaikan ujian!\n\nKetentuan waktu minimal pengerjaan: ' + minMinutes + ' menit.\nSisa waktu: ' + formatTime(remainingSeconds));
+                    e.stopImmediatePropagation();
+                    alert('Anda belum dapat menyelesaikan ujian!\n\nKetentuan waktu minimal pengerjaan adalah ' + minMinutes + ' menit.\nSisa waktu: ' + formatTime(remainingSeconds));
                     return false;
                 }
             }, true);
+        }
+
+        // Intercept form.submit() programmatic calls (Moodle AMD submission_confirmation.js bypass)
+        if (finishForm && !finishForm._cbtSubmitOverridden) {
+            finishForm._cbtSubmitOverridden = true;
+            var origSubmit = finishForm.submit.bind(finishForm);
+            finishForm.submit = function() {
+                if (remainingSeconds > 0) {
+                    alert('Anda belum dapat menyelesaikan ujian!\n\nKetentuan waktu minimal pengerjaan adalah ' + minMinutes + ' menit.\nSisa waktu: ' + formatTime(remainingSeconds));
+                    return false;
+                }
+                return origSubmit();
+            };
+        }
+
+        // Global capturing click listener to prevent Moodle AMD confirmation modal from even opening
+        if (!window._cbtClickCaptureAttached) {
+            window._cbtClickCaptureAttached = true;
+            document.addEventListener('click', function(e) {
+                if (remainingSeconds <= 0) return;
+                var target = e.target;
+                if (!target) return;
+                var btn = target.closest('#responseform, #frm-finishattempt button, .btn-finishattempt button, [data-action="save"]');
+                if (btn) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    alert('Anda belum dapat menyelesaikan ujian!\n\nKetentuan waktu minimal pengerjaan adalah ' + minMinutes + ' menit.\nSisa waktu: ' + formatTime(remainingSeconds));
+                    return false;
+                }
+            }, true);
+        }
+
+        // Notifikasi jika dialihkan kembali dari server-side validation processattempt.php
+        if (window.location.search.indexOf('cbt_early=1') !== -1 && !window._cbtEarlyAlertShown) {
+            window._cbtEarlyAlertShown = true;
+            setTimeout(function() {
+                alert('PERINGATAN DARI SERVER:\n\nPengumpulan ujian ditolak karena ketentuan waktu minimal belum tercapai (' + minMinutes + ' menit).\nSilakan teliti kembali jawaban Anda hingga waktu minimal habis.');
+            }, 300);
         }
 
         updateLockUI();
