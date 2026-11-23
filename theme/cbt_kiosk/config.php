@@ -13,7 +13,7 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-require_once($CFG->dirroot . '/theme/boost/lib.php');
+require_once($CFG->dirroot . '/theme/boost/config.php');
 require_once(__DIR__ . '/lib.php');
 
 $THEME->name        = 'cbt_kiosk';
@@ -26,12 +26,10 @@ $THEME->scss = function($theme) {
     return theme_cbt_kiosk_get_main_scss_content($theme);
 };
 
-// Override login layout with CBT kiosk login page, keep all other layouts inherited from Boost
-$THEME->layouts     = [
-    'login' => [
-        'file'    => 'login.php',
-        'regions' => [],
-    ],
+// Override login layout with CBT kiosk login page, while preserving ALL Boost layouts (admin, standard, drawers, etc.)
+$THEME->layouts['login'] = [
+    'file'    => 'login.php',
+    'regions' => [],
 ];
 
 $THEME->enable_dock = false;
